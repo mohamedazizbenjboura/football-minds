@@ -5,6 +5,25 @@
 > This is PROJECT_SPEC.md §1's non-negotiable rule, restated by the project
 > owner as the single most important requirement of the whole project.
 
+## 🟢 Status: LIVE (since 2026-07-29)
+
+- Frontend: **https://football-minds.vercel.app** — deployed via Vercel's
+  "Import Git Repository", git-linked to `main`.
+- Backend: **https://football-minds-socket.onrender.com** — deployed via
+  Render's API (`create_web_service`), git-linked to `main`,
+  `autoDeploy: yes`.
+- `CLIENT_ORIGIN` on Render is set to the Vercel URL above; `NEXT_PUBLIC_SOCKET_URL`
+  on Vercel is set to the Render URL above. The loop is closed.
+- **Both auto-redeploy on every push to `main`.** To ship an update: commit,
+  push, done — nothing below needs to be repeated. See `PROGRESS.md`'s
+  "REAL DEPLOYMENT COMPLETE" log entry for exactly what was set up and how.
+
+Everything below this point is the original walkthrough, kept for reference
+(e.g. if the services ever need to be recreated from scratch) — it is not
+something you need to do again.
+
+---
+
 Short version: **two free services, no credit card required for either.**
 
 | Piece | Service | Why |

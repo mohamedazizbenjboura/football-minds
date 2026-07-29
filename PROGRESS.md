@@ -5,6 +5,14 @@
 
 ---
 
+## 🟢 LIVE
+- Frontend: **https://football-minds.vercel.app**
+- Backend (Socket.io): **https://football-minds-socket.onrender.com** (`/health` check)
+- Both are git-linked to `main` on https://github.com/mohamedazizbenjboura/football-minds — **push to `main` and both auto-redeploy**, no manual step, no PC required to stay on. See the 2026-07-29 "REAL DEPLOYMENT COMPLETE" Log entry for the full story and exactly what was verified.
+- Free-tier caveat (unchanged from `DEPLOYMENT.md`): Render's free Web Service sleeps after ~15 min idle, ~30-60s cold start on the next request. Not a bug, not something to "fix" without a plan change.
+
+---
+
 ## Status vs Build Order (PROJECT_SPEC.md §9)
 
 1. **Foundation** — ✅ mostly done
@@ -108,6 +116,15 @@
 ---
 
 ## Log (newest first)
+
+### 2026-07-29 — REAL DEPLOYMENT COMPLETE: the site is live, free, and does not depend on this PC
+- This is the project's own stated single most important requirement (`PROJECT_SPEC.md` §1, `DEPLOYMENT.md`'s header) — it is now genuinely done, not just documented as possible.
+- **Backend (Socket.io room server) — deployed via the `render` MCP connector's `create_web_service`**, directly from this session, no dashboard clicking needed: service `football-minds-socket` on Render's free tier, region Frankfurt, git-linked to `mohamedazizbenjboura/football-minds` branch `main`, `autoDeploy: "yes"` / `autoDeployTrigger: "commit"` confirmed via `get_service`. Live at **https://football-minds-socket.onrender.com** — `/health` verified responding with `Football Minds socket server is running.` after the deploy.
+- **Frontend (Next.js) — deployed by Aziz via Vercel's "Import Git Repository" flow** (the one step that genuinely cannot be done via API/MCP token: it's an OAuth consent screen authorizing Vercel's GitHub App, which only the account owner can click through). Live at **https://football-minds.vercel.app** — confirmed responding `200` and rendering real app HTML (`Joining room BHQ4G2…` on a room URL Aziz tested). Because this went through Vercel's real Git import (not a one-off file upload), it is git-linked exactly like the backend — pushes to `main` auto-redeploy it too.
+- **Closed the loop**: used `render:update_environment_variables` to set `CLIENT_ORIGIN=https://football-minds.vercel.app` on the Render service (was unset since the service was created before Aziz's Vercel URL existed) — this triggered an automatic redeploy, confirmed healthy afterward via `/health` and `get_service`.
+- **What this means going forward, stated plainly**: every future session that finishes real work just needs to `git push` to `main` (same as every session already does) — both Render and Vercel pick up the new commit and redeploy themselves automatically, with zero manual action from Aziz or from Claude. Nothing about the live site depends on `C:\Users\aziz\foot` or this machine staying on. The project's core, non-negotiable requirement is now actually met, not just architecturally planned for.
+- **Not yet done**: a real two-device/two-tab playtest of the *deployed* site (every prior session's playtest caveat was about local dev; now that it's deployed, that's the more meaningful version of that test). Also not done: Neon/Postgres (§4 in `DEPLOYMENT.md`, intentionally optional/non-blocking — nothing about playing a room needs it yet, per `PROJECT_SPEC.md`'s own "Socket.io memory vs Postgres" rule of thumb).
+- Next session: **do not re-run the Render/Vercel setup steps above — they're done.** Read this entry first. If continuing feature work (progression layer / XP / Postgres is the next unbuilt Build Order item, per §9 step 4), remember the deploy is now live proof of every change — playtest the actual `https://football-minds.vercel.app` URL after pushing, not just `tsc`/`eslint`, since that gap (never runtime-tested) has been flagged unaddressed for several sessions running.
 
 ### 2026-07-29 — Shirt Number Madness committed (7/7 games done); real deployment started via Render + Vercel MCP tools
 - Picked up exactly where the prior session's audit left off. Independently re-verified rather than trusting this file: `git status`/`git log` confirmed the same uncommitted state described below (`server/chainEngine.ts` + `server/index.ts` modified, `server/shirtMadnessEngine.ts` + `src/lib/store/shirtMadness.ts` untracked) — and found that `src/app/game/[id]/page.tsx` **already had a complete, working `ShirtMadnessGame()` screen and switch branch** sitting uncommitted, which the prior session's own status table said was still missing. Read the full diff before trusting it. Ran `npx tsc --noEmit` and `npx eslint .` fresh (both clean, exit code 0) before committing anything.
