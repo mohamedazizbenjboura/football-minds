@@ -51,6 +51,14 @@ import {
   type LastManStandingPlayer,
 } from "./lastManStandingEngine";
 import { namesMatch, isValidPick } from "./guessThePlayerEngine";
+import {
+  buildClues as buildPyramidClues,
+  randomFootballPyramidTarget,
+  isCorrectFootballPyramidGuess,
+  FOOTBALL_PYRAMID_CLUE_COUNT,
+  type FootballPyramidPlayer,
+  type FootballPyramidClue,
+} from "./footballPyramidEngine";
 
 // Render/Fly inject PORT at runtime — that must win over the local-dev default.
 const PORT = Number(process.env.PORT ?? process.env.SOCKET_PORT ?? 4001);
@@ -70,6 +78,10 @@ const CAREER_MAZE_ROUND_SECONDS = 20; // time to guess after the full timeline i
 const CAREER_MAZE_ROUND_END_DELAY_MS = 4000; // pause after a round resolves before the next round starts
 const LAST_MAN_STANDING_ANSWER_SECONDS = 20; // time everyone has to submit one answer per round
 const LAST_MAN_STANDING_ROUND_END_DELAY_MS = 5000; // pause showing eliminations before the next round/prompt
+const FOOTBALL_PYRAMID_ROUNDS = 5;
+const FOOTBALL_PYRAMID_CLUE_INTERVAL_MS = 4000; // time between each clue reveal
+const FOOTBALL_PYRAMID_ROUND_END_DELAY_MS = 4000; // pause after a round resolves before the next round starts
+const FOOTBALL_PYRAMID_POST_LAST_CLUE_MS = 6000; // grace period after the final clue before the round closes
 
 // ---------------------------------------------------------------------------
 // Types
@@ -183,6 +195,21 @@ interface GuessThePlayerGameState {
   forfeited: boolean; // true if the game ended by an opponent disconnecting rather than a correct guess
 }
 
+interface FootballPyramidGameState {
+  round: number;
+  totalRounds: number;
+  target: FootballPyramidPlayer;
+  clues: FootballPyramidClue[];
+  cluesRevealed: number;
+  usedNames: Set<string>;
+  scores: Map<string, number>;
+  solvedIds: Set<string>; // socketIds who already scored this round — locked out from guessing again
+  phase: "clue" | "roundEnd" | "gameEnd";
+  timer: ReturnType<typeof setTimeout> | null;
+  nextClueAt: number | null;
+  winnerId: string | null; // only set once phase === "gameEnd"
+}
+
 interface Room {
   code: string;
   mode: RoomMode;
@@ -197,6 +224,7 @@ interface Room {
   careerMaze?: CareerMazeGameState;
   lastManStanding?: LastManStandingGameState;
   guessThePlayer?: GuessThePlayerGameState;
+  footballPyramid?: FootballPyramidGameState;
 }
 
 const MAX_PLAYERS = 50;
@@ -845,6 +873,159 @@ function endGuessThePlayerGame(io: Server, room: Room, winnerId: string | null, 
 }
 
 // ---------------------------------------------------------------------------
+// Football Pyramid — game logic (PROJECT_SPEC.md §5 "Football Pyramid")
+//
+// Clues reveal on a fixed schedule, same cadence as Who Am I?. The key
+// difference: this is "guess anytime" for *every* player, not first-guess-
+// wins. Each player can score at most once per round via `pyramid:submit`
+// — the moment their guess is correct they're awarded points based on how
+// many clues had already been shown (guess early, score more) and are then
+// locked out of guessing again this round (wrong guesses before that stay
+// silent, no penalty, try again). The round keeps going for everyone else
+// until every clue has been shown plus a grace window, or every player still
+// in the room has already solved it — whichever comes first. After
+// FOOTBALL_PYRAMID_ROUNDS rounds the highest total score wins.
+// ---------------------------------------------------------------------------
+
+function initFootballPyramidGame(room: Room) {
+  const scores = new Map<string, number>();
+  for (const id of room.players.keys()) scores.set(id, 0);
+
+  room.footballPyramid = {
+    round: 0,
+    totalRounds: FOOTBALL_PYRAMID_ROUNDS,
+    target: null as unknown as FootballPyramidPlayer, // set by startFootballPyramidRound below
+    clues: [],
+    cluesRevealed: 0,
+    usedNames: new Set(),
+    scores,
+    solvedIds: new Set(),
+    phase: "clue",
+    timer: null,
+    nextClueAt: null,
+    winnerId: null,
+  };
+  startFootballPyramidRound(io, room);
+}
+
+function startFootballPyramidRound(io: Server, room: Room) {
+  const fp = room.footballPyramid;
+  if (!fp) return;
+
+  const target = randomFootballPyramidTarget(fp.usedNames);
+  if (!target) {
+    // Dataset exhausted (shouldn't happen at FOOTBALL_PYRAMID_ROUNDS=5 with ~40+ players) — end early rather than crash.
+    endFootballPyramidGame(io, room);
+    return;
+  }
+  fp.usedNames.add(target.name);
+  fp.round += 1;
+  fp.target = target;
+  fp.clues = buildPyramidClues(target);
+  fp.cluesRevealed = 1; // first clue is visible immediately when the round starts
+  fp.solvedIds = new Set();
+  fp.phase = "clue";
+  armFootballPyramidClueTimer(io, room);
+  broadcastFootballPyramidState(io, room);
+}
+
+function armFootballPyramidClueTimer(io: Server, room: Room) {
+  const fp = room.footballPyramid;
+  if (!fp) return;
+  if (fp.timer) clearTimeout(fp.timer);
+
+  if (fp.cluesRevealed < FOOTBALL_PYRAMID_CLUE_COUNT) {
+    fp.nextClueAt = Date.now() + FOOTBALL_PYRAMID_CLUE_INTERVAL_MS;
+    fp.timer = setTimeout(() => revealNextFootballPyramidClue(io, room), FOOTBALL_PYRAMID_CLUE_INTERVAL_MS);
+  } else {
+    // All clues shown — give a final grace window before closing the round.
+    fp.nextClueAt = null;
+    fp.timer = setTimeout(() => endFootballPyramidRound(io, room), FOOTBALL_PYRAMID_POST_LAST_CLUE_MS);
+  }
+}
+
+function revealNextFootballPyramidClue(io: Server, room: Room) {
+  const fp = room.footballPyramid;
+  if (!fp || fp.phase !== "clue") return;
+  fp.cluesRevealed = Math.min(fp.cluesRevealed + 1, FOOTBALL_PYRAMID_CLUE_COUNT);
+  armFootballPyramidClueTimer(io, room);
+  broadcastFootballPyramidState(io, room);
+}
+
+function footballPyramidPoints(cluesRevealed: number): number {
+  // 1 clue revealed (guessed instantly) = 100pts, down to a 20pt floor once every clue is out.
+  return Math.max(100 - (cluesRevealed - 1) * 10, 20);
+}
+
+function footballPyramidActivePlayerCount(room: Room): number {
+  return Array.from(room.players.keys()).length;
+}
+
+function endFootballPyramidRound(io: Server, room: Room) {
+  const fp = room.footballPyramid;
+  if (!fp || fp.phase !== "clue") return;
+  fp.phase = "roundEnd";
+  if (fp.timer) clearTimeout(fp.timer);
+  fp.timer = null;
+  broadcastFootballPyramidState(io, room);
+  scheduleNextFootballPyramidRoundOrEnd(io, room);
+}
+
+function scheduleNextFootballPyramidRoundOrEnd(io: Server, room: Room) {
+  const fp = room.footballPyramid;
+  if (!fp) return;
+  if (fp.timer) clearTimeout(fp.timer);
+
+  if (fp.round >= fp.totalRounds) {
+    fp.timer = setTimeout(() => endFootballPyramidGame(io, room), FOOTBALL_PYRAMID_ROUND_END_DELAY_MS);
+  } else {
+    fp.timer = setTimeout(() => startFootballPyramidRound(io, room), FOOTBALL_PYRAMID_ROUND_END_DELAY_MS);
+  }
+}
+
+function endFootballPyramidGame(io: Server, room: Room) {
+  const fp = room.footballPyramid;
+  if (!fp) return;
+  if (fp.timer) clearTimeout(fp.timer);
+  fp.timer = null;
+  fp.phase = "gameEnd";
+
+  let bestId: string | null = null;
+  let bestScore = -1;
+  for (const [id, score] of fp.scores.entries()) {
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = id;
+    }
+  }
+  fp.winnerId = bestId;
+  broadcastFootballPyramidState(io, room);
+}
+
+function publicFootballPyramidState(room: Room) {
+  const fp = room.footballPyramid;
+  if (!fp) return null;
+  const revealTarget = fp.phase !== "clue";
+  return {
+    round: fp.round,
+    totalRounds: fp.totalRounds,
+    clues: fp.clues.slice(0, fp.cluesRevealed),
+    cluesRevealed: fp.cluesRevealed,
+    totalClues: FOOTBALL_PYRAMID_CLUE_COUNT,
+    phase: fp.phase,
+    solvedIds: Array.from(fp.solvedIds),
+    targetName: revealTarget ? fp.target.name : null,
+    scores: Object.fromEntries(fp.scores),
+    nextClueAt: fp.nextClueAt,
+    winnerId: fp.winnerId,
+  };
+}
+
+function broadcastFootballPyramidState(io: Server, room: Room) {
+  io.to(room.code).emit("pyramid:state", publicFootballPyramidState(room));
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
@@ -1002,6 +1183,8 @@ io.on("connection", (socket: Socket) => {
       initLastManStandingGame(room);
     } else if (room.gameId === "guess-the-player") {
       initGuessThePlayerGame(room);
+    } else if (room.gameId === "football-pyramid") {
+      initFootballPyramidGame(room);
     }
 
     ack?.({ ok: true });
@@ -1012,6 +1195,7 @@ io.on("connection", (socket: Socket) => {
     if (room.careerMaze) broadcastCareerMazeState(io, room);
     if (room.lastManStanding) broadcastLastManStandingState(io, room);
     if (room.guessThePlayer) broadcastGuessThePlayerState(io, room);
+    if (room.footballPyramid) broadcastFootballPyramidState(io, room);
   });
 
   socket.on("chat:message", (payload: { text: string; emoji?: string }) => {
@@ -1241,6 +1425,42 @@ io.on("connection", (socket: Socket) => {
     }
   });
 
+  // --- Football Pyramid ---------------------------------------------------
+
+  socket.on("pyramid:sync", (ack?: (res: unknown) => void) => {
+    const room = roomForSocket(socket.id);
+    ack?.(room?.footballPyramid ? publicFootballPyramidState(room) : null);
+  });
+
+  socket.on("pyramid:submit", (payload: { name: string }) => {
+    const room = roomForSocket(socket.id);
+    const fp = room?.footballPyramid;
+    if (!room || !fp) return;
+    if (fp.phase !== "clue") return; // round already closed, guess is too late
+    if (fp.solvedIds.has(socket.id)) return; // already scored this round, no repeat scoring
+
+    const raw = (payload?.name ?? "").trim();
+    if (!raw) return;
+    if (!isCorrectFootballPyramidGuess(fp.target, raw)) return; // wrong guesses are silent — no penalty, just try again
+
+    const points = footballPyramidPoints(fp.cluesRevealed);
+    fp.solvedIds.add(socket.id);
+    fp.scores.set(socket.id, (fp.scores.get(socket.id) ?? 0) + points);
+
+    io.to(room.code).emit("pyramid:solved", {
+      playerId: socket.id,
+      displayName: room.players.get(socket.id)?.displayName ?? "Player",
+      points,
+    });
+    broadcastFootballPyramidState(io, room);
+
+    // Everyone currently in the room has scored this round — no reason to
+    // keep waiting out the clue schedule/grace window.
+    if (fp.solvedIds.size >= footballPyramidActivePlayerCount(room)) {
+      endFootballPyramidRound(io, room);
+    }
+  });
+
   socket.on("room:leave", () => handleLeave(socket));
   socket.on("disconnect", () => handleLeave(socket));
 });
@@ -1263,6 +1483,7 @@ function handleLeave(socket: Socket) {
     if (room.whoAmI?.timer) clearTimeout(room.whoAmI.timer);
     if (room.careerMaze?.timer) clearTimeout(room.careerMaze.timer);
     if (room.lastManStanding?.timer) clearTimeout(room.lastManStanding.timer);
+    if (room.footballPyramid?.timer) clearTimeout(room.footballPyramid.timer);
     rooms.delete(room.code);
     return;
   }

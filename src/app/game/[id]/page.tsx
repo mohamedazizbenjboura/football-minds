@@ -5,11 +5,11 @@
  * Routed to from the room lobby once the host starts a match
  * (see src/app/room/[code]/page.tsx's `room:started` redirect).
  *
- * "the-chain", "who-am-i", "career-maze", "last-man-standing", and
- * "guess-the-player" are real, playable game engines right now — see
- * PROGRESS.md for status on the remaining two. Every
- * other id renders an honest "in development" screen instead of a
- * broken/empty page.
+ * "the-chain", "who-am-i", "career-maze", "last-man-standing",
+ * "guess-the-player", and "football-pyramid" are real, playable game
+ * engines right now — see PROGRESS.md for status on the remaining one
+ * ("shirt-madness"). Every other id renders an honest "in development"
+ * screen instead of a broken/empty page.
  */
 
 import { useEffect, useState } from "react";
@@ -22,6 +22,7 @@ import { useWhoAmIStore } from "@/lib/store/whoami";
 import { useCareerMazeStore } from "@/lib/store/careerMaze";
 import { useLastManStandingStore } from "@/lib/store/lastManStanding";
 import { useGuessThePlayerStore } from "@/lib/store/guessThePlayer";
+import { useFootballPyramidStore } from "@/lib/store/footballPyramid";
 import { gameById } from "@/lib/games";
 import PlayerAvatar from "@/components/PlayerAvatar";
 import ClubBadge from "@/components/ClubBadge";
@@ -46,6 +47,9 @@ export default function GamePage() {
   if (gameId === "guess-the-player") {
     return <GuessThePlayerGame />;
   }
+  if (gameId === "football-pyramid") {
+    return <FootballPyramidGame />;
+  }
   return <ComingSoon gameId={gameId} />;
 }
 
@@ -67,7 +71,7 @@ function ComingSoon({ gameId }: { gameId: string }) {
         <p className="text-gray-400">{game?.description}</p>
         <div className="flex items-center gap-2 text-sm text-[var(--color-accent)] bg-[var(--color-accent)]/10 rounded-full px-4 py-2">
           <Construction size={16} />
-          In active development — The Chain, Who Am I?, Career Maze, Last Man Standing, and Guess The Player are fully playable now.
+          In active development — The Chain, Who Am I?, Career Maze, Last Man Standing, Guess The Player, and Football Pyramid are fully playable now.
         </div>
         <button
           onClick={() => router.push("/")}
@@ -1260,6 +1264,280 @@ function GuessThePlayerGame() {
         >
           Guess
         </button>
+      </form>
+    </main>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Football Pyramid — fully playable
+//
+// Unlike Who Am I?, any number of players can solve a round: guessing
+// correctly scores you points and locks *your own* input for the rest of
+// the round, but everyone else keeps guessing until every clue has been
+// shown (+ grace) or everyone has solved it.
+// ---------------------------------------------------------------------------
+
+function FootballPyramidGame() {
+  const router = useRouter();
+  const { room, selfId } = useRoomStore();
+  const { state, lastSolved, attach, sync, submit } = useFootballPyramidStore();
+  const [guess, setGuess] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    attach();
+    sync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, []);
+
+  // Clear the guess box whenever a new round starts (derived during render,
+  // not an effect, to avoid a synchronous setState-in-effect cascade).
+  const [guessRound, setGuessRound] = useState<number | null>(null);
+  if (state && state.round !== guessRound) {
+    setGuessRound(state.round);
+    if (guess) setGuess("");
+  }
+
+  function nameOf(id: string | null) {
+    return room?.players.find((p) => p.socketId === id)?.displayName ?? "—";
+  }
+
+  const alreadySolved = Boolean(state && selfId && state.solvedIds.includes(selfId));
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const text = guess.trim();
+    if (!text || state?.phase !== "clue" || alreadySolved) return;
+    submit(text);
+    setGuess("");
+  }
+
+  if (!room) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-xl font-bold">No active room</p>
+        <button
+          onClick={() => router.push("/")}
+          className="text-[var(--color-primary)] font-semibold hover:underline"
+        >
+          Back home
+        </button>
+      </main>
+    );
+  }
+
+  if (!state) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-gray-400">Loading Football Pyramid…</p>
+      </main>
+    );
+  }
+
+  const sortedScores = Object.entries(state.scores).sort(([, a], [, b]) => b - a);
+  const secondsToNextClue = state.nextClueAt
+    ? Math.max(0, Math.ceil((state.nextClueAt - now) / 1000))
+    : null;
+
+  if (state.phase === "gameEnd") {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-6 px-4 text-center">
+        <motion.div
+          initial={{ scale: 0.85, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="glass rounded-3xl p-10 max-w-md w-full flex flex-col items-center gap-4"
+        >
+          <Trophy size={48} className="text-[var(--color-accent)]" />
+          <h1 className="text-3xl font-bold">{nameOf(state.winnerId)} wins!</h1>
+          <p className="text-gray-400">After {state.totalRounds} rounds of Football Pyramid</p>
+          <div className="w-full flex flex-col gap-2 mt-2">
+            {sortedScores.map(([id, score], i) => (
+              <div
+                key={id}
+                className={`flex items-center justify-between rounded-xl px-4 py-2.5 ${
+                  i === 0 ? "bg-[var(--color-primary)]/15" : "bg-white/5"
+                }`}
+              >
+                <span className="font-semibold">
+                  {i + 1}. {nameOf(id)}
+                  {id === selfId ? " (you)" : ""}
+                </span>
+                <span className="font-bold font-mono">{score} pts</span>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={() => router.push(`/room/${room.code}`)}
+            className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
+          >
+            Back to lobby
+          </button>
+        </motion.div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen px-4 pt-6 pb-32 max-w-3xl mx-auto w-full flex flex-col gap-5">
+      <div className="flex items-center justify-between">
+        <button
+          onClick={() => router.push(`/room/${room.code}`)}
+          className="flex items-center gap-1.5 text-gray-400 hover:text-white text-sm font-semibold"
+        >
+          <ArrowLeft size={16} /> Lobby
+        </button>
+        <div className="flex items-center gap-2 text-sm font-bold text-gray-300">
+          Round {state.round} / {state.totalRounds}
+        </div>
+        {state.phase === "clue" && (
+          <div className="flex items-center gap-2 font-mono font-bold text-lg">
+            <Clock
+              size={18}
+              className={
+                secondsToNextClue !== null && secondsToNextClue <= 1
+                  ? "text-red-400"
+                  : "text-[var(--color-primary)]"
+              }
+            />
+            <span>{secondsToNextClue ?? "—"}s</span>
+          </div>
+        )}
+      </div>
+
+      {/* Latest solve toast */}
+      <AnimatePresence>
+        {state.phase === "clue" && lastSolved && (
+          <motion.div
+            key={`${lastSolved.playerId}-${lastSolved.points}-${state.cluesRevealed}`}
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="flex items-center gap-3 rounded-2xl px-5 py-3 bg-[var(--color-primary)]/15 border border-[var(--color-primary)]/40"
+          >
+            <Sparkles className="text-[var(--color-primary)]" size={20} />
+            <p className="font-bold">
+              {lastSolved.displayName} got it! +{lastSolved.points} pts
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Round-end banner */}
+      <AnimatePresence>
+        {state.phase === "roundEnd" && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className={`flex items-center gap-3 rounded-2xl px-5 py-4 ${
+              state.solvedIds.length > 0
+                ? "bg-[var(--color-primary)]/15 border border-[var(--color-primary)]/40"
+                : "bg-white/5 border border-white/10"
+            }`}
+          >
+            {state.solvedIds.length > 0 ? (
+              <Sparkles className="text-[var(--color-primary)]" size={22} />
+            ) : (
+              <HelpCircle className="text-gray-400" size={22} />
+            )}
+            <div>
+              <p className="font-bold">
+                {state.solvedIds.length > 0
+                  ? `${state.solvedIds.length} player${state.solvedIds.length === 1 ? "" : "s"} got it this round!`
+                  : "Nobody guessed it in time."}
+              </p>
+              <p className="text-sm text-gray-400">
+                It was <span className="font-semibold text-white">{state.targetName}</span> — next round starting…
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Clue pyramid */}
+      <div className="glass rounded-3xl p-5 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">
+            Clue {state.cluesRevealed} of {state.totalClues}
+          </p>
+          <div className="flex gap-1">
+            {Array.from({ length: state.totalClues }).map((_, i) => (
+              <span
+                key={i}
+                className={`w-2 h-2 rounded-full ${
+                  i < state.cluesRevealed ? "bg-[var(--color-primary)]" : "bg-white/10"
+                }`}
+              />
+            ))}
+          </div>
+        </div>
+        <AnimatePresence initial={false}>
+          {state.clues.map((clue, i) => (
+            <motion.div
+              key={`${clue.label}-${i}`}
+              initial={{ opacity: 0, x: -12 }}
+              animate={{ opacity: 1, x: 0 }}
+              className="flex items-center justify-between bg-white/5 rounded-xl px-4 py-3"
+            >
+              <span className="text-sm text-gray-400 font-semibold">{clue.label}</span>
+              <span className="font-bold">{clue.value}</span>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Live scoreboard, with a checkmark for who's already solved this round */}
+      <div className="flex flex-wrap gap-2">
+        {sortedScores.map(([id, score]) => (
+          <span
+            key={id}
+            className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full ${
+              state.solvedIds.includes(id)
+                ? "bg-[var(--color-primary)]/15 text-[var(--color-primary)]"
+                : "bg-white/5 text-gray-300"
+            }`}
+          >
+            {state.solvedIds.includes(id) && <Sparkles size={12} />}
+            {nameOf(id)}
+            {id === selfId ? " (you)" : ""}: {score}
+          </span>
+        ))}
+      </div>
+
+      {/* Input */}
+      <form
+        onSubmit={handleSubmit}
+        className="fixed bottom-0 left-0 right-0 p-4 glass border-t border-white/10 flex justify-center"
+      >
+        <div className="w-full max-w-3xl flex gap-2">
+          <input
+            value={guess}
+            onChange={(e) => setGuess(e.target.value)}
+            disabled={state.phase !== "clue" || alreadySolved}
+            placeholder={
+              alreadySolved
+                ? "You already scored this round — waiting on others…"
+                : state.phase === "clue"
+                ? "Who is it?…"
+                : "Waiting for next round…"
+            }
+            className="flex-1 h-14 px-4 rounded-xl bg-white/5 border border-white/10 focus:border-[var(--color-primary)] outline-none disabled:opacity-40 transition-colors"
+          />
+          <button
+            type="submit"
+            disabled={state.phase !== "clue" || alreadySolved || !guess.trim()}
+            className="w-14 h-14 rounded-xl bg-[var(--color-primary)] text-black flex items-center justify-center shrink-0 disabled:opacity-40 hover:bg-[var(--color-primary-dark)] transition-colors"
+            aria-label="Submit"
+          >
+            <Send size={20} />
+          </button>
+        </div>
       </form>
     </main>
   );
