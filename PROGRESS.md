@@ -89,6 +89,22 @@
 
 ## Log (newest first)
 
+### 2026-07-29 — Repo pushed to GitHub; deployment unblocked (the actual critical-path item)
+- Context: the previous session (2026-07-29, earlier) found that despite months of real implementation existing on disk, the repo's git history was still just the original `create-next-app` commit — nothing had ever been committed or pushed, and there was no GitHub remote at all. Since Render and Vercel both deploy **from GitHub**, this meant the app could not go live yet no matter how complete `DEPLOYMENT.md` was. That session's terminal tool crashed before the commit could run.
+- This session: re-verified from scratch rather than trusting the log — ran `git status`, `git log`, `git remote -v` first. Found one thing already surprisingly done (commit `b61394f`, "Implement full Football Minds core build..." — either that earlier session's commit did land before the crash, or a concurrent session committed it; either way it was real and on disk) but still **no remote, nothing pushed**. Also found one untracked file, `server/data/clubs.json` (14 real clubs with league/country — unused by any code, not referenced anywhere, likely stray/leftover data), and confirmed the previously-flagged nested duplicate clone at `foot\foot\` no longer exists.
+- Ran `npx tsc --noEmit` and `npx eslint .` fresh before touching anything — both clean.
+- Created the GitHub repo `mohamedazizbenjboura/football-minds` (public) via the GitHub MCP tool.
+- `git branch -M main`, `git remote add origin https://github.com/mohamedazizbenjboura/football-minds.git`, `git push -u origin main` — **succeeded**. Confirmed via `git ls-remote origin` that the repo is really there.
+- Committed and pushed `server/data/clubs.json` separately (`git commit -m 'Add clubs seed data'` then push) rather than silently dropping it, since it's real football data that could feed the leagues/clubs side of `foot_database.md` later even though nothing uses it yet.
+- **Repo is now live at https://github.com/mohamedazizbenjboura/football-minds — this was the actual blocker for "free hosting, no PC required," not anything in `DEPLOYMENT.md` itself, which was already correct.**
+- Confirmed a Vercel account is connected (`azizjboura27-8111's projects` team) via available tooling. **No equivalent tool exists for Render** — Render deployment (the Socket.io server, per `DEPLOYMENT.md` §1) has no API/CLI access available in this environment at all, and doing it requires Aziz's own Render login to connect the GitHub repo and click "Apply" on the blueprint. Same for the final "Import Git Repository" click on Vercel (§2) — that needs Aziz's own OAuth consent to authorize Vercel against the new GitHub repo; an unlinked one-off file upload would work as a demo but would **not** stay in sync with future commits, defeating the point of having a real repo now. Deliberately did not do that instead.
+- **What Aziz needs to do himself, now that the repo exists (5 minutes total, exact steps already in `DEPLOYMENT.md` §1–§3):**
+  1. https://dashboard.render.com → New + → Blueprint → connect `mohamedazizbenjboura/football-minds` → Apply. Copy the resulting `https://football-minds-socket.onrender.com`-style URL.
+  2. https://vercel.com/new → import the same repo → add env var `NEXT_PUBLIC_SOCKET_URL` = the Render URL from step 1 → Deploy.
+  3. Render dashboard → the service → Environment → add `CLIENT_ORIGIN` = the Vercel URL from step 2 → save.
+  4. Open the Vercel URL on two devices, create/join a room, confirm realtime works.
+- Next session should verify with Aziz whether those 3 dashboard steps got done, and if so, playtest the live URL for real (nothing in this project has ever been runtime-tested across two real browser tabs, deployed or local — every session so far has only verified `tsc`/`eslint`). If not done yet, that's still the single highest-priority item before touching more game code, since it's the project's own stated most-important requirement.
+
 ### 2026-07-28 — Guess The Player built end-to-end (1v1)
 - User said "continue" — re-read `PROJECT_SPEC.md`, `foot_database.md`, and this file in full before starting, per standing instructions.
 - Ran `npx tsc --noEmit` and `npx eslint .` first, before assuming the previous session's "clean" sign-off still held — both still clean, so this session started from real green rather than a stale claim.
