@@ -1,0 +1,16 @@
+[
+  { "name": "Barcelona", "shortName": "Barça", "country": "Spain", "league": "La Liga" },
+  { "name": "Real Madrid", "shortName": "Real Madrid", "country": "Spain", "league": "La Liga" },
+  { "name": "Atletico Madrid", "shortName": "Atléti", "country": "Spain", "league": "La Liga" },
+  { "name": "Paris Saint-Germain", "shortName": "PSG", "country": "France", "league": "Ligue 1" },
+  { "name": "Manchester United", "shortName": "Man United", "country": "England", "league": "Premier League" },
+  { "name": "Manchester City", "shortName": "Man City", "country": "England", "league": "Premier League" },
+  { "name": "Liverpool", "shortName": "Liverpool", "country": "England", "league": "Premier League" },
+  { "name": "Tottenham Hotspur", "shortName": "Spurs", "country": "England", "league": "Premier League" },
+  { "name": "Chelsea", "shortName": "Chelsea", "country": "England", "league": "Premier League" },
+  { "name": "Leicester City", "shortName": "Leicester", "country": "England", "league": "Premier League" },
+  { "name": "Juventus", "shortName": "Juve", "country": "Italy", "league": "Serie A" },
+  { "name": "AC Milan", "shortName": "Milan", "country": "Italy", "league": "Serie A" },
+  { "name": "Bayern Munich", "shortName": "Bayern", "country": "Germany", "league": "Bundesliga" },
+  { "name": "Borussia Dortmund", "shortName": "Dortmund", "country": "Germany", "league": "Bundesliga" }
+]
