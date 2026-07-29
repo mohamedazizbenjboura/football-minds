@@ -1,0 +1,203 @@
+// Football Minds — core football database schema
+// Powers every game: Guess The Player, Who Am I, Career Maze,
+// Football Pyramid, Last Man Standing, The Chain, Shirt Number Madness.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Position {
+  GK
+  DF
+  MF
+  FW
+}
+
+enum StrongFoot {
+  LEFT
+  RIGHT
+  BOTH
+}
+
+model Club {
+  id            String      @id @default(cuid())
+  name          String      @unique
+  shortName     String
+  country       String
+  badgeUrl      String
+  primaryColor  String      @default("#00E676")
+  stints        ClubStint[]
+  currentPlayers Player[]   @relation("CurrentClub")
+
+  @@map("clubs")
+}
+
+model Player {
+  id                    String      @id @default(cuid())
+  slug                  String      @unique
+  name                  String
+  nationality           String
+  photoUrl              String
+  position              Position
+  strongFoot            StrongFoot
+  birthYear             Int
+  heightCm              Int?
+  retired               Boolean     @default(false)
+  ballonDor             Int         @default(0)
+  worldCupWinner        Boolean     @default(false)
+  championsLeagueWinner Boolean     @default(false)
+
+  currentClubId         String?
+  currentClub           Club?       @relation("CurrentClub", fields: [currentClubId], references: [id])
+
+  stints                ClubStint[]
+  aliases               PlayerAlias[]
+
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+
+  @@index([name])
+  @@index([nationality])
+  @@index([position])
+  @@map("players")
+}
+
+/// Alternate names/nicknames a player is searched by — foot_database.md §6.
+/// "CR7" -> Cristiano Ronaldo, "R9" -> Ronaldo Nazario, etc. Every game's
+/// player search box should match against these in addition to `Player.name`.
+model PlayerAlias {
+  id       String @id @default(cuid())
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  alias    String
+
+  @@unique([playerId, alias])
+  @@index([alias])
+  @@map("player_aliases")
+}
+
+/// One spell of a player's career at a club — the building block for
+/// Career Maze timelines and for validating "played together" links in The Chain.
+model ClubStint {
+  id          String   @id @default(cuid())
+  playerId    String
+  player      Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  clubId      String
+  club        Club     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  startYear   Int
+  endYear     Int? // null = still there
+  shirtNumber Int?
+  order       Int // position in the player's career timeline, 0-indexed
+
+  @@index([clubId, startYear, endYear])
+  @@index([playerId, order])
+  @@map("club_stints")
+}
+
+// ---------------------------------------------------------------------------
+// Progression & Social — PROJECT_SPEC.md §6
+// "If it's true about this person, forever, it lives in Postgres."
+// Guest mode (deviceId) must never be blocked by auth — accounts start here
+// and can later be linked to a Google/Discord identity in a later phase.
+// ---------------------------------------------------------------------------
+
+enum GameId {
+  GUESS_THE_PLAYER
+  WHO_AM_I
+  CAREER_MAZE
+  FOOTBALL_PYRAMID
+  LAST_MAN_STANDING
+  THE_CHAIN
+  SHIRT_NUMBER_MADNESS
+}
+
+model User {
+  id                 String             @id @default(cuid())
+  deviceId           String             @unique // guest-mode identity, always present
+  displayName        String
+  avatarSeed         String             @default("")
+  googleId           String?            @unique
+  discordId          String?            @unique
+
+  stats              PlayerStats?
+  achievements       UserAchievement[]
+  leaderboardEntries LeaderboardEntry[]
+
+  createdAt          DateTime           @default(now())
+  lastSeenAt         DateTime           @default(now())
+
+  @@map("users")
+}
+
+model PlayerStats {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  xp           Int      @default(0)
+  level        Int      @default(1)
+  coins        Int      @default(0)
+
+  gamesPlayed  Int      @default(0)
+  gamesWon     Int      @default(0)
+
+  // Derived/cached, not recomputed on every read — cheap favorite-game lookup for profile pages.
+  favoriteGame GameId?
+
+  updatedAt    DateTime @updatedAt
+
+  @@map("player_stats")
+}
+
+model Achievement {
+  id          String            @id @default(cuid())
+  key         String            @unique // e.g. "football_genius", "chain_survivor"
+  title       String
+  description String
+  icon        String            // lucide icon name or emoji
+
+  unlockedBy  UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String      @id @default(cuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  unlockedAt    DateTime    @default(now())
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}
+
+enum LeaderboardPeriod {
+  GLOBAL
+  FRIENDS
+  WEEKLY
+  MONTHLY
+  ALL_TIME
+}
+
+/// Recomputed periodically (cron/job), not written on every match — cheap to
+/// query for the four leaderboard views in PROJECT_SPEC.md §6.
+model LeaderboardEntry {
+  id         String            @id @default(cuid())
+  userId     String
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  period     LeaderboardPeriod
+  score      Int
+  rank       Int
+  computedAt DateTime          @default(now())
+
+  @@unique([userId, period])
+  @@index([period, rank])
+  @@map("leaderboard_entries")
+}

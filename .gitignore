@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# debug test harness output
+.socket-test-*.log
+.tmp-test-harness.mjs

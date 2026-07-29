@@ -1,0 +1,350 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Copy,
+  Check,
+  Crown,
+  LogOut,
+  Send,
+  UserX,
+  Loader2,
+  Swords,
+  Users2,
+  Grid3x3,
+} from "lucide-react";
+import { useRoomStore, type RoomMode } from "@/lib/store/room";
+import { GAMES, gameById } from "@/lib/games";
+
+const DISPLAY_NAME_KEY = "fm:displayName";
+
+const MODES: { id: RoomMode; label: string; icon: React.ReactNode }[] = [
+  { id: "1v1", label: "1v1", icon: <Swords size={16} /> },
+  { id: "2v2", label: "2v2", icon: <Users2 size={16} /> },
+  { id: "ffa", label: "FFA", icon: <Grid3x3 size={16} /> },
+];
+
+export default function RoomLobbyPage() {
+  const params = useParams<{ code: string }>();
+  const router = useRouter();
+  const code = (params?.code ?? "").toString().toUpperCase();
+
+  const {
+    room,
+    selfId,
+    error,
+    joinRoom,
+    leaveRoom,
+    setReady,
+    changeMode,
+    changeGame,
+    kick,
+    startGame,
+    sendChat,
+    clearError,
+  } = useRoomStore();
+
+  // Lazily seeded from `room` so a mount where the store already has the
+  // room (e.g. remounted while still connected) starts non-joining without
+  // needing a synchronous setState-in-effect to correct it afterwards.
+  const [joining, setJoining] = useState(() => !room);
+  const [chatText, setChatText] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // If we land here directly (refresh, shared link) without room state yet,
+  // rejoin using the name we remember locally. If there's no remembered
+  // name, send them home to pick one via the entry modal.
+  useEffect(() => {
+    if (room) return; // already have room state — nothing to (re)join
+    const name = typeof window !== "undefined" ? localStorage.getItem(DISPLAY_NAME_KEY) : null;
+    if (!name) {
+      router.replace("/");
+      return;
+    }
+    joinRoom(code, name).then((ok) => {
+      setJoining(false);
+      if (!ok) {
+        // room may simply not exist (bad/expired code) — bounce home
+        setTimeout(() => router.replace("/"), 1500);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
+
+  useEffect(() => {
+    if (room?.started && room.gameId) {
+      router.push(`/game/${room.gameId}?room=${room.code}`);
+    }
+  }, [room?.started, room?.gameId, room?.code, router]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [room?.chat.length]);
+
+  if (joining) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <Loader2 className="animate-spin text-[var(--color-primary)]" size={36} />
+        <p className="text-gray-400">Joining room {code}…</p>
+      </main>
+    );
+  }
+
+  if (!room) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-xl font-bold">Couldn&apos;t join room {code}</p>
+        <p className="text-gray-400 max-w-sm">{error ?? "That room may not exist anymore."}</p>
+      </main>
+    );
+  }
+
+  const self = room.players.find((p) => p.socketId === selfId);
+  const isHost = self?.isHost ?? false;
+  const capacity = room.mode === "1v1" ? 2 : room.mode === "2v2" ? 4 : 50;
+  const nonHostPlayers = room.players.filter((p) => !p.isHost);
+  const everyoneReady = nonHostPlayers.length > 0 && nonHostPlayers.every((p) => p.ready);
+  const currentGame = gameById(room.gameId ?? undefined);
+
+  function copyCode() {
+    navigator.clipboard?.writeText(room!.code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  async function handleStart() {
+    setStarting(true);
+    await startGame();
+    setStarting(false);
+  }
+
+  function handleLeave() {
+    leaveRoom();
+    router.push("/");
+  }
+
+  function handleSendChat(e: React.FormEvent) {
+    e.preventDefault();
+    const text = chatText.trim();
+    if (!text) return;
+    sendChat(text);
+    setChatText("");
+  }
+
+  return (
+    <main className="min-h-screen px-4 pt-10 pb-28 max-w-5xl mx-auto w-full flex flex-col gap-6">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={copyCode}
+            className="flex items-center gap-2 glass rounded-2xl px-4 py-3 font-mono text-2xl font-bold tracking-[0.25em] hover:border-[var(--color-primary)]/50 border border-transparent transition-colors"
+          >
+            {room.code}
+            {copied ? (
+              <Check size={18} className="text-[var(--color-primary)]" />
+            ) : (
+              <Copy size={18} className="text-gray-400" />
+            )}
+          </button>
+          <span className="text-sm text-gray-400">
+            {room.players.length}/{capacity} players
+          </span>
+        </div>
+        <button
+          onClick={handleLeave}
+          className="flex items-center gap-2 text-gray-400 hover:text-red-400 transition-colors text-sm font-semibold"
+        >
+          <LogOut size={16} /> Leave
+        </button>
+      </div>
+
+      {error && (
+        <p className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-xl px-4 py-2.5 flex items-center justify-between">
+          {error}
+          <button onClick={clearError} className="underline">dismiss</button>
+        </p>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
+        {/* Left: setup + players */}
+        <div className="flex flex-col gap-6">
+          {/* Mode + game select (host only editable) */}
+          <div className="glass rounded-3xl p-5 flex flex-col gap-4">
+            <div>
+              <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">Mode</p>
+              <div className="grid grid-cols-3 gap-2">
+                {MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    disabled={!isHost}
+                    onClick={() => changeMode(m.id)}
+                    className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-sm font-bold transition-colors ${
+                      room.mode === m.id
+                        ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
+                        : "border-white/10 bg-white/5 text-gray-300"
+                    } ${!isHost ? "opacity-60 cursor-not-allowed" : "hover:border-white/20"}`}
+                  >
+                    {m.icon}
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">Game</p>
+              {isHost ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {GAMES.map((g) => (
+                    <button
+                      key={g.id}
+                      onClick={() => changeGame(g.id)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold transition-colors text-left ${
+                        room.gameId === g.id
+                          ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
+                          : "border-white/10 bg-white/5 text-gray-300 hover:border-white/20"
+                      }`}
+                    >
+                      <span>{g.icon}</span>
+                      <span className="truncate">{g.title}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="glass rounded-xl px-4 py-3 flex items-center gap-2">
+                  <span className="text-xl">{currentGame?.icon ?? "❓"}</span>
+                  <span className="font-semibold">
+                    {currentGame?.title ?? "Waiting for host to pick a game…"}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Players */}
+          <div className="glass rounded-3xl p-5">
+            <p className="text-xs font-semibold text-gray-400 mb-3 uppercase tracking-wide">
+              Players
+            </p>
+            <div className="flex flex-col gap-2">
+              <AnimatePresence initial={false}>
+                {room.players.map((p) => (
+                  <motion.div
+                    key={p.socketId}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 10 }}
+                    className="flex items-center justify-between bg-white/5 rounded-xl px-4 py-3"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-9 h-9 rounded-full bg-[var(--color-primary)]/15 text-[var(--color-primary)] flex items-center justify-center font-bold text-sm shrink-0">
+                        {p.displayName.slice(0, 2).toUpperCase()}
+                      </div>
+                      <span className="font-semibold truncate">{p.displayName}</span>
+                      {p.isHost && <Crown size={16} className="text-[var(--color-accent)] shrink-0" />}
+                      {p.socketId === selfId && (
+                        <span className="text-xs text-gray-500 shrink-0">(you)</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {!p.isHost && (
+                        <span
+                          className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                            p.ready
+                              ? "bg-[var(--color-primary)]/15 text-[var(--color-primary)]"
+                              : "bg-white/10 text-gray-400"
+                          }`}
+                        >
+                          {p.ready ? "Ready" : "Not ready"}
+                        </span>
+                      )}
+                      {isHost && p.socketId !== selfId && (
+                        <button
+                          onClick={() => kick(p.socketId)}
+                          className="text-gray-500 hover:text-red-400 transition-colors p-1"
+                          aria-label={`Kick ${p.displayName}`}
+                        >
+                          <UserX size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: chat */}
+        <div className="glass rounded-3xl p-5 flex flex-col h-[420px] lg:h-auto">
+          <p className="text-xs font-semibold text-gray-400 mb-3 uppercase tracking-wide">Chat</p>
+          <div className="flex-1 overflow-y-auto flex flex-col gap-2 pr-1 mb-3">
+            {room.chat.length === 0 && (
+              <p className="text-sm text-gray-500 italic">Say hi to the lobby 👋</p>
+            )}
+            {room.chat.map((m) => (
+              <div key={m.id} className="text-sm">
+                <span className="font-bold text-[var(--color-primary)]">{m.from}: </span>
+                <span className="text-gray-200">{m.text}</span>
+              </div>
+            ))}
+            <div ref={chatEndRef} />
+          </div>
+          <form onSubmit={handleSendChat} className="flex gap-2">
+            <input
+              value={chatText}
+              onChange={(e) => setChatText(e.target.value)}
+              maxLength={280}
+              placeholder="Type a message…"
+              className="flex-1 h-11 px-3 rounded-xl bg-white/5 border border-white/10 focus:border-[var(--color-primary)] outline-none text-sm transition-colors"
+            />
+            <button
+              type="submit"
+              className="w-11 h-11 rounded-xl bg-[var(--color-primary)] text-black flex items-center justify-center shrink-0 hover:bg-[var(--color-primary-dark)] transition-colors"
+              aria-label="Send"
+            >
+              <Send size={18} />
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {/* Bottom action bar */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 glass border-t border-white/10 flex items-center justify-center gap-4">
+        {isHost ? (
+          <button
+            onClick={handleStart}
+            disabled={!room.gameId || !everyoneReady || starting}
+            className="w-full max-w-md h-14 rounded-xl bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)] disabled:opacity-40 disabled:cursor-not-allowed text-black font-bold text-lg flex items-center justify-center gap-2 transition-colors"
+          >
+            {starting ? (
+              <Loader2 size={20} className="animate-spin" />
+            ) : !room.gameId ? (
+              "Pick a game first"
+            ) : !everyoneReady ? (
+              "Waiting for everyone to be ready…"
+            ) : (
+              "Start Game"
+            )}
+          </button>
+        ) : (
+          <button
+            onClick={() => setReady(!self?.ready)}
+            className={`w-full max-w-md h-14 rounded-xl font-bold text-lg transition-colors ${
+              self?.ready
+                ? "bg-white/10 text-gray-300 hover:bg-white/15"
+                : "bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)] text-black"
+            }`}
+          >
+            {self?.ready ? "Cancel ready" : "I'm ready"}
+          </button>
+        )}
+      </div>
+    </main>
+  );
+}

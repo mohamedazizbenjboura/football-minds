@@ -1,0 +1,46 @@
+/**
+ * Guess The Player — game engine, PROJECT_SPEC.md §5 "Guess The Player".
+ *
+ * "Classic 20-questions. No timer, no hints, no AI. Player A and Player B
+ * each secretly pick a player (via search, resolved through searchPlayer,
+ * shown as a real <PlayerAvatar/> only to its owner). Unlimited yes/no
+ * questions asked in room chat, answered by the opponent. First correct
+ * guess wins."
+ *
+ * Unlike The Chain / Who Am I? / Career Maze / Last Man Standing, this game
+ * has no dataset dependency at all: the secret pick is any real player the
+ * TWO PARTICIPANTS agree exists (resolved client-side via
+ * /api/player-search → TheSportsDB, per §3 — the room server itself never
+ * calls TheSportsDB, it only ever stores/compares the plain name string
+ * that already went through that lookup). There is deliberately no
+ * automated "is this actually a real player" check here — the spec is
+ * explicit that this game has "no AI"; correctness is between the two
+ * humans, exactly like a real-life 20-questions game.
+ *
+ * This session's implementation is scoped to **1v1 only**. The spec also
+ * describes a 2v2 variant ("teammates share one hidden player"), but that
+ * requires a team-assignment mechanism (`RoomPlayer.team`) that is declared
+ * in server/index.ts's types but has no socket event to actually set it
+ * anywhere in the codebase — see PROGRESS.md "Known gaps". Building fake
+ * team assignment just for this one game felt like the wrong order of
+ * operations; the real fix is a proper `room:assignTeam` (or similar)
+ * event that every 2v2 game will eventually need, not something bolted on
+ * here. `server/index.ts` rejects `room:start` for this game outside 1v1
+ * mode with a clear error message rather than pretending to support it.
+ */
+
+import { normalizeName } from "./chainEngine";
+
+/** Case/accent/whitespace-insensitive comparison, reusing the same
+ * normalization every other game already uses for name matching. */
+export function namesMatch(a: string, b: string): boolean {
+  const na = normalizeName(a);
+  const nb = normalizeName(b);
+  return na.length > 0 && na === nb;
+}
+
+/** A pick is valid if it's non-empty after trimming — no dataset/API check
+ * here by design (see file header). */
+export function isValidPick(raw: string): boolean {
+  return raw.trim().length > 0;
+}

@@ -1,0 +1,37 @@
+# Render Blueprint — deploys the Socket.io room server as a free Web Service.
+# PROJECT_SPEC.md §1: "Hosting | Frontend → Vercel (free). Socket.io server
+# → Render or Fly.io free tier." This file makes that a one-click deploy
+# instead of manual dashboard clicking. See DEPLOYMENT.md for the full,
+# step-by-step walkthrough (this file alone isn't enough — Vercel + Neon
+# still need to be set up separately, and CLIENT_ORIGIN below needs your
+# real Vercel URL filled in after the frontend is deployed).
+#
+# Render free-tier caveat (documented honestly, not hidden): a free Web
+# Service spins down after ~15 minutes with no traffic and takes 30-60s to
+# wake back up on the next request. That's fine for a friend-group party
+# game — the host opens the room and everyone joins a minute later — but it
+# is NOT "always instantly on." If that cold start ever becomes annoying,
+# the fix is Render's paid tier or a free uptime-pinger (e.g. UptimeRobot
+# hitting /health every 10 min) — not a code change.
+
+services:
+  - type: web
+    name: football-minds-socket
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: npm run start:socket
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.1
+      - key: CLIENT_ORIGIN
+        # Comma-separated list — set this to your deployed Vercel URL(s)
+        # after the frontend is live, e.g.:
+        # https://football-minds.vercel.app,https://football-minds-git-main-yourname.vercel.app
+        # Fill in via the Render dashboard (Environment tab); left blank
+        # here on purpose since Blueprints shouldn't hardcode per-deploy URLs.
+        sync: false
+    # PORT is injected automatically by Render — server/index.ts already
+    # prefers process.env.PORT over the local-dev SOCKET_PORT default.

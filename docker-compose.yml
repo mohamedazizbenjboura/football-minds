@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: football-minds-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: football
+      POSTGRES_PASSWORD: football
+      POSTGRES_DB: football_minds
+    ports:
+      - "5433:5432"
+    volumes:
+      - football_minds_pgdata:/var/lib/postgresql/data
+
+volumes:
+  football_minds_pgdata:
