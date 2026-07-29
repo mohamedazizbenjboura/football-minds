@@ -30,6 +30,7 @@ export interface ChainPlayer {
   continent: string;
   position: ChainPosition;
   foot: Foot;
+  shirtNumber: number;
   birthYear: number;
   retired: boolean;
   worldCupWinner: boolean;

@@ -5,11 +5,11 @@
  * Routed to from the room lobby once the host starts a match
  * (see src/app/room/[code]/page.tsx's `room:started` redirect).
  *
- * "the-chain", "who-am-i", "career-maze", "last-man-standing",
- * "guess-the-player", and "football-pyramid" are real, playable game
- * engines right now — see PROGRESS.md for status on the remaining one
- * ("shirt-madness"). Every other id renders an honest "in development"
- * screen instead of a broken/empty page.
+ * All 7 games from the spec are real, playable engines now: "the-chain",
+ * "who-am-i", "career-maze", "last-man-standing", "guess-the-player",
+ * "football-pyramid", and "shirt-madness". Any other id renders an honest
+ * "in development" screen instead of a broken/empty page (future ids only,
+ * per Build Order §9).
  */
 
 import { useEffect, useState } from "react";
@@ -23,6 +23,7 @@ import { useCareerMazeStore } from "@/lib/store/careerMaze";
 import { useLastManStandingStore } from "@/lib/store/lastManStanding";
 import { useGuessThePlayerStore } from "@/lib/store/guessThePlayer";
 import { useFootballPyramidStore } from "@/lib/store/footballPyramid";
+import { useShirtMadnessStore } from "@/lib/store/shirtMadness";
 import { gameById } from "@/lib/games";
 import PlayerAvatar from "@/components/PlayerAvatar";
 import ClubBadge from "@/components/ClubBadge";
@@ -50,11 +51,14 @@ export default function GamePage() {
   if (gameId === "football-pyramid") {
     return <FootballPyramidGame />;
   }
+  if (gameId === "shirt-madness") {
+    return <ShirtMadnessGame />;
+  }
   return <ComingSoon gameId={gameId} />;
 }
 
 // ---------------------------------------------------------------------------
-// Placeholder for the 6 games not built yet (honest, not a broken page)
+// Placeholder for future games not yet in the spec's Build Order (honest, not a broken page)
 // ---------------------------------------------------------------------------
 
 function ComingSoon({ gameId }: { gameId: string }) {
@@ -71,7 +75,7 @@ function ComingSoon({ gameId }: { gameId: string }) {
         <p className="text-gray-400">{game?.description}</p>
         <div className="flex items-center gap-2 text-sm text-[var(--color-accent)] bg-[var(--color-accent)]/10 rounded-full px-4 py-2">
           <Construction size={16} />
-          In active development — The Chain, Who Am I?, Career Maze, Last Man Standing, Guess The Player, and Football Pyramid are fully playable now.
+          All 7 games from the spec are fully playable now.
         </div>
         <button
           onClick={() => router.push("/")}
@@ -1532,6 +1536,257 @@ function FootballPyramidGame() {
           <button
             type="submit"
             disabled={state.phase !== "clue" || alreadySolved || !guess.trim()}
+            className="w-14 h-14 rounded-xl bg-[var(--color-primary)] text-black flex items-center justify-center shrink-0 disabled:opacity-40 hover:bg-[var(--color-primary-dark)] transition-colors"
+            aria-label="Submit"
+          >
+            <Send size={20} />
+          </button>
+        </div>
+      </form>
+    </main>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shirt Number Madness — fully playable
+//
+// Same "everyone answers simultaneously" shape as Last Man Standing, but
+// nobody is ever eliminated — pure scoring across several rounds. Duplicate
+// valid answers (same resolved player) all score zero for that round.
+// ---------------------------------------------------------------------------
+
+function shirtMadnessReasonLabel(reason: string | null): string {
+  switch (reason) {
+    case "no-answer":
+      return "no answer submitted in time";
+    case "not-found":
+      return "not a recognized player";
+    case "wrong-number":
+      return "didn't wear that number";
+    case "duplicate":
+      return "someone else gave the same answer";
+    default:
+      return "";
+  }
+}
+
+function ShirtMadnessGame() {
+  const router = useRouter();
+  const { room, selfId } = useRoomStore();
+  const { state, attach, sync, submit } = useShirtMadnessStore();
+  const [guess, setGuess] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    attach();
+    sync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, []);
+
+  // Clear the guess box whenever a new round starts (derived during render,
+  // not an effect, to avoid a synchronous setState-in-effect cascade).
+  const [guessRound, setGuessRound] = useState<number | null>(null);
+  if (state && state.round !== guessRound) {
+    setGuessRound(state.round);
+    if (guess) setGuess("");
+  }
+
+  function nameOf(id: string | null) {
+    return room?.players.find((p) => p.socketId === id)?.displayName ?? "—";
+  }
+
+  const alreadyAnswered = Boolean(state && selfId && state.answeredPlayerIds.includes(selfId));
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const text = guess.trim();
+    if (!text || state?.phase !== "answering" || alreadyAnswered) return;
+    submit(text);
+    setGuess("");
+  }
+
+  if (!room) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-xl font-bold">No active room</p>
+        <button
+          onClick={() => router.push("/")}
+          className="text-[var(--color-primary)] font-semibold hover:underline"
+        >
+          Back home
+        </button>
+      </main>
+    );
+  }
+
+  if (!state) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-gray-400">Loading Shirt Number Madness…</p>
+      </main>
+    );
+  }
+
+  const sortedScores = Object.entries(state.scores).sort(([, a], [, b]) => b - a);
+  const secondsLeft = state.roundEndsAt ? Math.max(0, Math.ceil((state.roundEndsAt - now) / 1000)) : null;
+  const totalPlayers = room.players.length;
+
+  if (state.phase === "gameEnd") {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-6 px-4 text-center">
+        <motion.div
+          initial={{ scale: 0.85, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="glass rounded-3xl p-10 max-w-md w-full flex flex-col items-center gap-4"
+        >
+          <Trophy size={48} className="text-[var(--color-accent)]" />
+          <h1 className="text-3xl font-bold">{nameOf(state.winnerId)} wins!</h1>
+          <p className="text-gray-400">After {state.totalRounds} rounds of Shirt Number Madness</p>
+          <div className="w-full flex flex-col gap-2 mt-2">
+            {sortedScores.map(([id, score], i) => (
+              <div
+                key={id}
+                className={`flex items-center justify-between rounded-xl px-4 py-2.5 ${
+                  i === 0 ? "bg-[var(--color-primary)]/15" : "bg-white/5"
+                }`}
+              >
+                <span className="font-semibold">
+                  {i + 1}. {nameOf(id)}
+                  {id === selfId ? " (you)" : ""}
+                </span>
+                <span className="font-bold font-mono">{score} pts</span>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={() => router.push(`/room/${room.code}`)}
+            className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
+          >
+            Back to lobby
+          </button>
+        </motion.div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen px-4 pt-6 pb-32 max-w-3xl mx-auto w-full flex flex-col gap-5">
+      <div className="flex items-center justify-between">
+        <button
+          onClick={() => router.push(`/room/${room.code}`)}
+          className="flex items-center gap-1.5 text-gray-400 hover:text-white text-sm font-semibold"
+        >
+          <ArrowLeft size={16} /> Lobby
+        </button>
+        <div className="flex items-center gap-2 text-sm font-bold text-gray-300">
+          Round {state.round} / {state.totalRounds}
+        </div>
+        {state.phase === "answering" && (
+          <div className="flex items-center gap-2 font-mono font-bold text-lg">
+            <Clock
+              size={18}
+              className={secondsLeft !== null && secondsLeft <= 5 ? "text-red-400" : "text-[var(--color-primary)]"}
+            />
+            <span className={secondsLeft !== null && secondsLeft <= 5 ? "text-red-400" : ""}>
+              {secondsLeft ?? "—"}s
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Announced number */}
+      <div className="glass rounded-3xl p-6 flex flex-col items-center gap-2 text-center">
+        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Name a player who wore</p>
+        <p className="text-6xl font-extrabold text-[var(--color-accent)]">#{state.number}</p>
+        {state.phase === "answering" && (
+          <p className="text-sm text-gray-400">
+            {state.answeredPlayerIds.length} / {totalPlayers} answered
+          </p>
+        )}
+      </div>
+
+      {/* Round results */}
+      <AnimatePresence>
+        {state.phase === "roundEnd" && state.lastResults && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="glass rounded-2xl p-4 flex flex-col gap-2"
+          >
+            <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold px-1">
+              Round {state.round} results — next round starting…
+            </p>
+            {state.lastResults.map((r) => (
+              <div
+                key={r.playerId}
+                className={`flex items-center justify-between rounded-xl px-4 py-2.5 ${
+                  r.points > 0 ? "bg-[var(--color-primary)]/10" : "bg-red-500/10"
+                }`}
+              >
+                <span className="font-semibold flex items-center gap-2">
+                  {r.points > 0 ? (
+                    <Sparkles size={14} className="text-[var(--color-primary)]" />
+                  ) : (
+                    <Skull size={14} className="text-red-400" />
+                  )}
+                  {nameOf(r.playerId)}
+                  {r.playerId === selfId ? " (you)" : ""}
+                </span>
+                <span className="text-sm text-gray-400 text-right">
+                  {r.answer ? `"${r.answer}"` : "no answer"}
+                  {r.points > 0 ? ` — +${r.points} pts` : ` — ${shirtMadnessReasonLabel(r.reason)}`}
+                </span>
+              </div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Live scoreboard */}
+      <div className="flex flex-wrap gap-2">
+        {sortedScores.map(([id, score]) => (
+          <span
+            key={id}
+            className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full ${
+              state.answeredPlayerIds.includes(id)
+                ? "bg-[var(--color-primary)]/15 text-[var(--color-primary)]"
+                : "bg-white/5 text-gray-300"
+            }`}
+          >
+            {nameOf(id)}
+            {id === selfId ? " (you)" : ""}: {score}
+          </span>
+        ))}
+      </div>
+
+      {/* Input */}
+      <form
+        onSubmit={handleSubmit}
+        className="fixed bottom-0 left-0 right-0 p-4 glass border-t border-white/10 flex justify-center"
+      >
+        <div className="w-full max-w-3xl flex gap-2">
+          <input
+            value={guess}
+            onChange={(e) => setGuess(e.target.value)}
+            disabled={state.phase !== "answering" || alreadyAnswered}
+            placeholder={
+              alreadyAnswered
+                ? "Answer locked in — waiting on others…"
+                : state.phase === "answering"
+                ? `Who wore #${state.number}?…`
+                : "Waiting for next round…"
+            }
+            className="flex-1 h-14 px-4 rounded-xl bg-white/5 border border-white/10 focus:border-[var(--color-primary)] outline-none disabled:opacity-40 transition-colors"
+          />
+          <button
+            type="submit"
+            disabled={state.phase !== "answering" || alreadyAnswered || !guess.trim()}
             className="w-14 h-14 rounded-xl bg-[var(--color-primary)] text-black flex items-center justify-center shrink-0 disabled:opacity-40 hover:bg-[var(--color-primary-dark)] transition-colors"
             aria-label="Submit"
           >

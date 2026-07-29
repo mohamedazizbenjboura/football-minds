@@ -59,6 +59,11 @@ import {
   type FootballPyramidPlayer,
   type FootballPyramidClue,
 } from "./footballPyramidEngine";
+import {
+  randomShirtNumber,
+  verifyShirtAnswer,
+  type ShirtMadnessPlayer,
+} from "./shirtMadnessEngine";
 
 // Render/Fly inject PORT at runtime — that must win over the local-dev default.
 const PORT = Number(process.env.PORT ?? process.env.SOCKET_PORT ?? 4001);
@@ -82,6 +87,9 @@ const FOOTBALL_PYRAMID_ROUNDS = 5;
 const FOOTBALL_PYRAMID_CLUE_INTERVAL_MS = 4000; // time between each clue reveal
 const FOOTBALL_PYRAMID_ROUND_END_DELAY_MS = 4000; // pause after a round resolves before the next round starts
 const FOOTBALL_PYRAMID_POST_LAST_CLUE_MS = 6000; // grace period after the final clue before the round closes
+const SHIRT_MADNESS_ROUNDS = 5;
+const SHIRT_MADNESS_ANSWER_SECONDS = 15; // time everyone has to submit one player per round
+const SHIRT_MADNESS_ROUND_END_DELAY_MS = 5000; // pause showing round results before the next number/game end
 
 // ---------------------------------------------------------------------------
 // Types
@@ -210,6 +218,28 @@ interface FootballPyramidGameState {
   winnerId: string | null; // only set once phase === "gameEnd"
 }
 
+interface ShirtMadnessAnswerResult {
+  playerId: string;
+  answer: string | null;
+  points: number;
+  reason: "no-answer" | "not-found" | "wrong-number" | "duplicate" | null;
+  resolvedName: string | null;
+}
+
+interface ShirtMadnessGameState {
+  round: number;
+  totalRounds: number;
+  number: number;
+  usedNumbers: Set<number>;
+  answers: Map<string, string>; // socketId -> raw submitted text, this round only
+  scores: Map<string, number>;
+  roundEndsAt: number | null;
+  lastResults: ShirtMadnessAnswerResult[] | null;
+  phase: "answering" | "roundEnd" | "gameEnd";
+  timer: ReturnType<typeof setTimeout> | null;
+  winnerId: string | null;
+}
+
 interface Room {
   code: string;
   mode: RoomMode;
@@ -225,6 +255,7 @@ interface Room {
   lastManStanding?: LastManStandingGameState;
   guessThePlayer?: GuessThePlayerGameState;
   footballPyramid?: FootballPyramidGameState;
+  shirtMadness?: ShirtMadnessGameState;
 }
 
 const MAX_PLAYERS = 50;
@@ -1026,6 +1057,173 @@ function broadcastFootballPyramidState(io: Server, room: Room) {
 }
 
 // ---------------------------------------------------------------------------
+// Shirt Number Madness — game logic (PROJECT_SPEC.md §5 "Shirt Number Madness")
+//
+// Round-based, same "everyone answers simultaneously" shape as Last Man
+// Standing via `shirtmadness:submit`, but nobody is ever eliminated — this
+// is a pure scoring game across SHIRT_MADNESS_ROUNDS rounds. A number is
+// announced; each survivor-in-the-room gets SHIRT_MADNESS_ANSWER_SECONDS to
+// name one real player who wore it. A round resolves the moment everyone
+// currently in the room has answered, or when the timer runs out (silence =
+// no points). Among valid answers (a real player who really wore that
+// number), anyone whose answer names the same player as someone else scores
+// zero for that round (a "duplicate", per spec wording); every other valid
+// answer scores flat points. After SHIRT_MADNESS_ROUNDS rounds the highest
+// total score wins.
+// ---------------------------------------------------------------------------
+
+const SHIRT_MADNESS_POINTS = 100;
+
+function initShirtMadnessGame(room: Room) {
+  const scores = new Map<string, number>();
+  for (const id of room.players.keys()) scores.set(id, 0);
+
+  room.shirtMadness = {
+    round: 0,
+    totalRounds: SHIRT_MADNESS_ROUNDS,
+    number: 0,
+    usedNumbers: new Set(),
+    answers: new Map(),
+    scores,
+    roundEndsAt: null,
+    lastResults: null,
+    phase: "answering",
+    timer: null,
+    winnerId: null,
+  };
+  startShirtMadnessRound(io, room);
+}
+
+function shirtMadnessActivePlayerIds(room: Room): string[] {
+  return Array.from(room.players.keys());
+}
+
+function startShirtMadnessRound(io: Server, room: Room) {
+  const s = room.shirtMadness;
+  if (!s) return;
+
+  const number = randomShirtNumber(s.usedNumbers);
+  if (number === null) {
+    // Number pool exhausted (shouldn't happen at SHIRT_MADNESS_ROUNDS=5) — end early rather than crash.
+    endShirtMadnessGame(io, room);
+    return;
+  }
+  s.usedNumbers.add(number);
+  s.round += 1;
+  s.number = number;
+  s.answers = new Map();
+  s.lastResults = null;
+  s.phase = "answering";
+
+  if (s.timer) clearTimeout(s.timer);
+  s.roundEndsAt = Date.now() + SHIRT_MADNESS_ANSWER_SECONDS * 1000;
+  s.timer = setTimeout(() => resolveShirtMadnessRound(io, room), SHIRT_MADNESS_ANSWER_SECONDS * 1000);
+
+  broadcastShirtMadnessState(io, room);
+}
+
+function resolveShirtMadnessRound(io: Server, room: Room) {
+  const s = room.shirtMadness;
+  if (!s || s.phase !== "answering") return;
+  if (s.timer) clearTimeout(s.timer);
+  s.timer = null;
+
+  const activeIds = shirtMadnessActivePlayerIds(room);
+  const verdicts = new Map<string, { player: ShirtMadnessPlayer; raw: string }>();
+  const results: ShirtMadnessAnswerResult[] = [];
+
+  for (const id of activeIds) {
+    const raw = s.answers.get(id) ?? null;
+    const verdict = verifyShirtAnswer(s.number, raw);
+    if (!verdict.ok) {
+      results.push({ playerId: id, answer: raw, points: 0, reason: verdict.reason, resolvedName: null });
+      continue;
+    }
+    verdicts.set(id, { player: verdict.player, raw: raw as string });
+  }
+
+  // Group valid answers by resolved player name to find duplicates.
+  const byName = new Map<string, string[]>();
+  for (const [id, v] of verdicts.entries()) {
+    const arr = byName.get(v.player.name) ?? [];
+    arr.push(id);
+    byName.set(v.player.name, arr);
+  }
+
+  for (const [name, ids] of byName.entries()) {
+    const isDuplicate = ids.length > 1;
+    const points = isDuplicate ? 0 : SHIRT_MADNESS_POINTS;
+    for (const id of ids) {
+      results.push({
+        playerId: id,
+        answer: verdicts.get(id)!.raw,
+        points,
+        reason: isDuplicate ? "duplicate" : null,
+        resolvedName: name,
+      });
+      if (points > 0) s.scores.set(id, (s.scores.get(id) ?? 0) + points);
+    }
+  }
+
+  s.lastResults = results;
+  s.phase = "roundEnd";
+  s.roundEndsAt = null;
+  broadcastShirtMadnessState(io, room);
+  scheduleNextShirtMadnessRoundOrEnd(io, room);
+}
+
+function scheduleNextShirtMadnessRoundOrEnd(io: Server, room: Room) {
+  const s = room.shirtMadness;
+  if (!s) return;
+  if (s.timer) clearTimeout(s.timer);
+
+  if (s.round >= s.totalRounds) {
+    s.timer = setTimeout(() => endShirtMadnessGame(io, room), SHIRT_MADNESS_ROUND_END_DELAY_MS);
+  } else {
+    s.timer = setTimeout(() => startShirtMadnessRound(io, room), SHIRT_MADNESS_ROUND_END_DELAY_MS);
+  }
+}
+
+function endShirtMadnessGame(io: Server, room: Room) {
+  const s = room.shirtMadness;
+  if (!s) return;
+  if (s.timer) clearTimeout(s.timer);
+  s.timer = null;
+  s.phase = "gameEnd";
+
+  let bestId: string | null = null;
+  let bestScore = -1;
+  for (const [id, score] of s.scores.entries()) {
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = id;
+    }
+  }
+  s.winnerId = bestId;
+  broadcastShirtMadnessState(io, room);
+}
+
+function publicShirtMadnessState(room: Room) {
+  const s = room.shirtMadness;
+  if (!s) return null;
+  return {
+    round: s.round,
+    totalRounds: s.totalRounds,
+    number: s.number,
+    answeredPlayerIds: Array.from(s.answers.keys()),
+    roundEndsAt: s.roundEndsAt,
+    lastResults: s.lastResults,
+    phase: s.phase,
+    scores: Object.fromEntries(s.scores),
+    winnerId: s.winnerId,
+  };
+}
+
+function broadcastShirtMadnessState(io: Server, room: Room) {
+  io.to(room.code).emit("shirtmadness:state", publicShirtMadnessState(room));
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
@@ -1185,6 +1383,8 @@ io.on("connection", (socket: Socket) => {
       initGuessThePlayerGame(room);
     } else if (room.gameId === "football-pyramid") {
       initFootballPyramidGame(room);
+    } else if (room.gameId === "shirt-madness") {
+      initShirtMadnessGame(room);
     }
 
     ack?.({ ok: true });
@@ -1196,6 +1396,7 @@ io.on("connection", (socket: Socket) => {
     if (room.lastManStanding) broadcastLastManStandingState(io, room);
     if (room.guessThePlayer) broadcastGuessThePlayerState(io, room);
     if (room.footballPyramid) broadcastFootballPyramidState(io, room);
+    if (room.shirtMadness) broadcastShirtMadnessState(io, room);
   });
 
   socket.on("chat:message", (payload: { text: string; emoji?: string }) => {
@@ -1461,6 +1662,34 @@ io.on("connection", (socket: Socket) => {
     }
   });
 
+  // --- Shirt Number Madness ------------------------------------------------
+
+  socket.on("shirtmadness:sync", (ack?: (res: unknown) => void) => {
+    const room = roomForSocket(socket.id);
+    ack?.(room?.shirtMadness ? publicShirtMadnessState(room) : null);
+  });
+
+  socket.on("shirtmadness:submit", (payload: { name: string }) => {
+    const room = roomForSocket(socket.id);
+    const s = room?.shirtMadness;
+    if (!room || !s) return;
+    if (s.phase !== "answering") return; // round already resolved, answer is too late
+    if (s.answers.has(socket.id)) return; // one answer per round, no changing your mind
+
+    const raw = (payload?.name ?? "").trim();
+    if (!raw) return;
+    s.answers.set(socket.id, raw);
+
+    // Resolve early the moment everyone currently in the room has answered.
+    const activeIds = shirtMadnessActivePlayerIds(room);
+    const allAnswered = activeIds.every((id) => s.answers.has(id));
+    if (allAnswered) {
+      resolveShirtMadnessRound(io, room);
+    } else {
+      broadcastShirtMadnessState(io, room);
+    }
+  });
+
   socket.on("room:leave", () => handleLeave(socket));
   socket.on("disconnect", () => handleLeave(socket));
 });
@@ -1484,6 +1713,7 @@ function handleLeave(socket: Socket) {
     if (room.careerMaze?.timer) clearTimeout(room.careerMaze.timer);
     if (room.lastManStanding?.timer) clearTimeout(room.lastManStanding.timer);
     if (room.footballPyramid?.timer) clearTimeout(room.footballPyramid.timer);
+    if (room.shirtMadness?.timer) clearTimeout(room.shirtMadness.timer);
     rooms.delete(room.code);
     return;
   }
@@ -1504,6 +1734,17 @@ function handleLeave(socket: Socket) {
       if (survivors.length <= 1 || survivors.every((id) => l.answers.has(id))) {
         resolveLastManStandingRound(io, room);
       }
+    }
+  }
+
+  // Mid-match disconnect during Shirt Number Madness: the departing player
+  // simply stops counting toward "everyone answered" (no elimination in
+  // this game) — resolve the round early if that was the last holdout.
+  if (room.shirtMadness && room.shirtMadness.phase === "answering") {
+    const s = room.shirtMadness;
+    const activeIds = shirtMadnessActivePlayerIds(room);
+    if (activeIds.length === 0 || activeIds.every((id) => s.answers.has(id))) {
+      resolveShirtMadnessRound(io, room);
     }
   }
 
