@@ -13,7 +13,6 @@ import {
   Loader2,
   Swords,
   Users2,
-  Grid3x3,
   ShieldCheck,
 } from "lucide-react";
 import { useRoomStore, TEAM_MODES, type RoomMode } from "@/lib/store/room";
@@ -21,17 +20,23 @@ import { GAMES, gameById } from "@/lib/games";
 
 const DISPLAY_NAME_KEY = "fm:displayName";
 
-// Every team size Guess The Player supports, 1v1 through 5v5, plus FFA
-// for every other game (PROJECT_SPEC.md §4). 2v2+ all reuse the same
-// "Users2" icon — the team-size number in the label does the rest.
+// Only Guess The Player has real modes — every team size it supports,
+// 1v1 through 5v5 (PROJECT_SPEC.md §4). Every other game is a single
+// free-for-all experience and never shows a mode picker at all. 2v2+ all
+// reuse the same "Users2" icon — the team-size number in the label does
+// the rest.
 const MODES: { id: RoomMode; label: string; icon: React.ReactNode }[] = [
   { id: "1v1", label: "1v1", icon: <Swords size={16} /> },
   { id: "2v2", label: "2v2", icon: <Users2 size={16} /> },
   { id: "3v3", label: "3v3", icon: <Users2 size={16} /> },
   { id: "4v4", label: "4v4", icon: <Users2 size={16} /> },
   { id: "5v5", label: "5v5", icon: <Users2 size={16} /> },
-  { id: "ffa", label: "FFA", icon: <Grid3x3 size={16} /> },
 ];
+
+// The only game that currently has team-size modes. Every other game just
+// runs as free-for-all under the hood — the host never needs to see or
+// touch "Mode" for it.
+const TEAM_MODE_GAMES = new Set(["guess-the-player"]);
 
 function capacityForMode(mode: RoomMode): number {
   if (mode === "ffa") return 50;
@@ -160,6 +165,21 @@ export default function RoomLobbyPage() {
     setChatText("");
   }
 
+  // Host picks the game first; the mode picker only shows up afterward, and
+  // only for games that actually have specialized modes (currently just
+  // Guess The Player). Switching into/out of that game keeps `room.mode` in
+  // sync so capacity + the Teams panel are never left pointing at a mode
+  // that no longer makes sense for the newly selected game.
+  function handleSelectGame(gameId: string) {
+    changeGame(gameId);
+    if (!room) return;
+    if (TEAM_MODE_GAMES.has(gameId)) {
+      if (room.mode === "ffa") changeMode("1v1");
+    } else if (room.mode !== "ffa") {
+      changeMode("ffa");
+    }
+  }
+
   return (
     <main className="min-h-screen px-4 pt-10 pb-28 max-w-5xl mx-auto w-full flex flex-col gap-6">
       {/* Header */}
@@ -198,29 +218,8 @@ export default function RoomLobbyPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
         {/* Left: setup + players */}
         <div className="flex flex-col gap-6">
-          {/* Mode + game select (host only editable) */}
+          {/* Game + mode select (host only editable) */}
           <div className="glass rounded-3xl p-5 flex flex-col gap-4">
-            <div>
-              <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">Mode</p>
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
-                {MODES.map((m) => (
-                  <button
-                    key={m.id}
-                    disabled={!isHost}
-                    onClick={() => changeMode(m.id)}
-                    className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-sm font-bold transition-colors ${
-                      room.mode === m.id
-                        ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
-                        : "border-white/10 bg-white/5 text-gray-300"
-                    } ${!isHost ? "opacity-60 cursor-not-allowed" : "hover:border-white/20"}`}
-                  >
-                    {m.icon}
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
             <div>
               <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">Game</p>
               {isHost ? (
@@ -228,7 +227,7 @@ export default function RoomLobbyPage() {
                   {GAMES.map((g) => (
                     <button
                       key={g.id}
-                      onClick={() => changeGame(g.id)}
+                      onClick={() => handleSelectGame(g.id)}
                       className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-semibold transition-colors text-left ${
                         room.gameId === g.id
                           ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
@@ -249,6 +248,32 @@ export default function RoomLobbyPage() {
                 </div>
               )}
             </div>
+
+            {/* Mode only exists for games that have real team sizes (right now,
+                just Guess The Player) — nothing renders here at all until the
+                host picks one of those games. */}
+            {room.gameId && TEAM_MODE_GAMES.has(room.gameId) && (
+              <div>
+                <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">Mode</p>
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                  {MODES.map((m) => (
+                    <button
+                      key={m.id}
+                      disabled={!isHost}
+                      onClick={() => changeMode(m.id)}
+                      className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-sm font-bold transition-colors ${
+                        room.mode === m.id
+                          ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
+                          : "border-white/10 bg-white/5 text-gray-300"
+                      } ${!isHost ? "opacity-60 cursor-not-allowed" : "hover:border-white/20"}`}
+                    >
+                      {m.icon}
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Teams — only for 2v2+ (1v1 auto-assigns, ffa has no teams) */}

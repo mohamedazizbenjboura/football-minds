@@ -3,16 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { X, Users2, Swords, Grid3x3, Loader2 } from "lucide-react";
-import { useRoomStore, type RoomMode } from "@/lib/store/room";
+import { X, Loader2 } from "lucide-react";
+import { useRoomStore } from "@/lib/store/room";
 
 const DISPLAY_NAME_KEY = "fm:displayName";
-
-const MODES: { id: RoomMode; label: string; hint: string; icon: React.ReactNode }[] = [
-  { id: "1v1", label: "1v1", hint: "Head to head", icon: <Swords size={18} /> },
-  { id: "2v2", label: "2v2", hint: "Team up", icon: <Users2 size={18} /> },
-  { id: "ffa", label: "Free-For-All", hint: "Up to 50 players", icon: <Grid3x3 size={18} /> },
-];
 
 interface RoomEntryModalProps {
   mode: "create" | "join";
@@ -27,7 +21,6 @@ export default function RoomEntryModal({ mode, onClose }: RoomEntryModalProps) {
     () => (typeof window !== "undefined" && localStorage.getItem(DISPLAY_NAME_KEY)) || ""
   );
   const [roomCode, setRoomCode] = useState("");
-  const [roomMode, setRoomMode] = useState<RoomMode>("ffa");
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -40,7 +33,10 @@ export default function RoomEntryModal({ mode, onClose }: RoomEntryModalProps) {
     localStorage.setItem(DISPLAY_NAME_KEY, name);
 
     if (mode === "create") {
-      const code = await createRoom(name, roomMode);
+      // Room mode is decided in the lobby once the host picks a game — each
+      // game has its own specialized set of modes (e.g. Guess The Player's
+      // 1v1..5v5). "ffa" is just the neutral starting value here.
+      const code = await createRoom(name, "ffa");
       setSubmitting(false);
       if (code) router.push(`/room/${code}`);
       return;
@@ -114,29 +110,6 @@ export default function RoomEntryModal({ mode, onClose }: RoomEntryModalProps) {
                   className="w-full h-12 px-4 rounded-xl bg-white/5 border border-white/10 focus:border-[var(--color-primary)] outline-none transition-colors placeholder:text-gray-500 tracking-[0.3em] font-mono uppercase text-center"
                 />
               </label>
-            )}
-
-            {mode === "create" && (
-              <div className="flex flex-col gap-2">
-                <span className="text-sm font-semibold text-gray-300">Mode</span>
-                <div className="grid grid-cols-3 gap-2">
-                  {MODES.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => setRoomMode(m.id)}
-                      className={`flex flex-col items-center gap-1.5 py-3 rounded-xl border transition-colors ${
-                        roomMode === m.id
-                          ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
-                          : "border-white/10 bg-white/5 text-gray-300 hover:border-white/20"
-                      }`}
-                    >
-                      {m.icon}
-                      <span className="text-xs font-bold">{m.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
             )}
 
             {error && (

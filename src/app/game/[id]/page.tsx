@@ -1102,12 +1102,24 @@ function GuessThePlayerGame() {
   // — picking one locks the other for this turn. Resets the moment the
   // turn moves on (to me or away from me), via the effect below.
   const [chosenAction, setChosenAction] = useState<"ask" | "guess" | null>(null);
+  // BUG FIX (live-problems.md): the server has always broadcast a per-turn
+  // `turnEndsAt` deadline (30s to ask/guess, 20s to answer — see
+  // server/index.ts GUESS_THE_PLAYER_ASK_SECONDS/ANSWER_SECONDS), but this
+  // screen never ticked a local clock against it or rendered a countdown,
+  // unlike every other game on this page. `now` re-renders every 250ms so
+  // `secondsLeft` below stays live.
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     attach();
     sync();
     syncTeamChat();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
   }, []);
 
   // Reset the turn-gated action picker whenever the turn moves on (to me or
@@ -1197,6 +1209,12 @@ function GuessThePlayerGame() {
     if (members.length <= 1) return members[0]?.displayName ?? `Team ${team}`;
     return `Team ${team} (${members.map((m) => m.displayName).join(", ")})`;
   }
+
+  // BUG FIX (live-problems.md): drives the countdown clock in the "playing"
+  // header below. `state.turnEndsAt` is only non-null once phase ===
+  // "playing", covering both the current asker's Ask/Guess window and, once
+  // a question is pending, the opposing team's window to answer it.
+  const secondsLeft = state.turnEndsAt ? Math.max(0, Math.ceil((state.turnEndsAt - now) / 1000)) : null;
 
   if (state.phase === "gameEnd") {
     const iWon = myTeam !== undefined && state.winnerTeam === myTeam;
@@ -1398,16 +1416,29 @@ function GuessThePlayerGame() {
   // phase === "playing"
   return (
     <main className="min-h-screen px-4 pt-6 pb-32 max-w-2xl mx-auto w-full flex flex-col gap-5">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <button
           onClick={() => router.push(`/room/${room.code}`)}
-          className="flex items-center gap-1.5 text-gray-400 hover:text-white text-sm font-semibold"
+          className="flex items-center gap-1.5 text-gray-400 hover:text-white text-sm font-semibold shrink-0"
         >
           <ArrowLeft size={16} /> Lobby
         </button>
-        <span className="text-sm font-bold text-gray-300 truncate max-w-[60%]">
+        <span className="text-sm font-bold text-gray-300 truncate max-w-[40%]">
           vs {opponentTeam ? teamLabel(opponentTeam) : "—"}
         </span>
+        {/* BUG FIX (live-problems.md): every other game screen shows its
+            turn/round countdown here — Guess The Player never did, even
+            though the server has always been ticking one down
+            (turnEndsAt). */}
+        <div className="flex items-center gap-2 font-mono font-bold text-lg shrink-0">
+          <Clock
+            size={18}
+            className={secondsLeft !== null && secondsLeft <= 5 ? "text-red-400" : "text-[var(--color-primary)]"}
+          />
+          <span className={secondsLeft !== null && secondsLeft <= 5 ? "text-red-400" : ""}>
+            {secondsLeft ?? "—"}s
+          </span>
+        </div>
       </div>
 
       <div className="glass rounded-2xl p-4 flex items-center gap-4">
