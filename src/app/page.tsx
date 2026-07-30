@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { GAMES } from "@/lib/games";
 import RoomEntryModal from "@/components/RoomEntryModal";
+import HeroPlayerWall from "@/components/HeroPlayerWall";
 
 export default function Home() {
   const router = useRouter();
@@ -18,63 +19,67 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen flex flex-col items-center pb-20 pt-16 px-4">
-      {/* Hero Section */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6 }}
-        className="flex flex-col items-center text-center mb-16"
-      >
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass text-[var(--color-primary)] font-semibold text-sm mb-6 border border-[var(--color-primary)]/20">
-          <span className="relative flex h-3 w-3">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--color-primary)] opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-[var(--color-primary)]"></span>
-          </span>
-          Live Multiplayer
-        </div>
-        <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight mb-4 drop-shadow-2xl">
-          Football <span className="text-[var(--color-primary)]">Minds</span>
-        </h1>
-        <p className="text-xl md:text-2xl text-gray-400 mb-10 max-w-2xl font-light">
-          The Ultimate Football Party Game.
-        </p>
+    <main className="min-h-screen flex flex-col items-center pb-20">
+      {/* Hero Section — stadium-under-lights backdrop + FIFA-cover player wall */}
+      <section className="stadium-lights relative w-full flex flex-col items-center pt-16 pb-2 px-4 overflow-hidden">
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="relative z-10 flex flex-col items-center text-center"
+        >
+          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass text-[var(--color-primary)] font-semibold text-sm mb-6 border border-[var(--color-primary)]/20">
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--color-primary)] opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-[var(--color-primary)]"></span>
+            </span>
+            Live Multiplayer
+          </div>
+          <h1 className="hero-headline text-6xl sm:text-7xl md:text-8xl uppercase leading-[1.05] pt-2 mb-4">
+            Football <span className="text-[var(--color-primary)]">Minds</span>
+          </h1>
+          <p className="text-lg md:text-2xl text-gray-400 mb-8 max-w-2xl font-light">
+            The Ultimate Football Party Game.
+          </p>
 
-        <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setModal("create")}
-            className="flex items-center justify-center gap-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)] text-black px-8 py-4 rounded-full font-bold text-lg transition-colors"
-          >
-            <Gamepad2 size={24} />
-            Create Room
-          </motion.button>
+          <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setModal("create")}
+              className="flex items-center justify-center gap-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-dark)] text-black px-8 py-4 rounded-full font-bold text-lg transition-colors"
+            >
+              <Gamepad2 size={24} />
+              Create Room
+            </motion.button>
 
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setModal("join")}
-            className="flex items-center justify-center gap-2 glass hover:bg-white/10 px-8 py-4 rounded-full font-bold text-lg transition-colors"
-          >
-            <Users size={24} />
-            Join Room
-          </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setModal("join")}
+              className="flex items-center justify-center gap-2 glass hover:bg-white/10 px-8 py-4 rounded-full font-bold text-lg transition-colors"
+            >
+              <Users size={24} />
+              Join Room
+            </motion.button>
 
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={playRandom}
-            className="flex items-center justify-center gap-2 border border-white/20 hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] px-8 py-4 rounded-full font-bold text-lg transition-colors"
-          >
-            <Shuffle size={24} />
-            Play Random
-          </motion.button>
-        </div>
-      </motion.div>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={playRandom}
+              className="flex items-center justify-center gap-2 border border-white/20 hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] px-8 py-4 rounded-full font-bold text-lg transition-colors"
+            >
+              <Shuffle size={24} />
+              Play Random
+            </motion.button>
+          </div>
+        </motion.div>
+
+        <HeroPlayerWall />
+      </section>
 
       {/* Games Grid */}
-      <div className="w-full max-w-7xl mx-auto">
+      <div className="w-full max-w-7xl mx-auto px-4 mt-10">
         <h2 className="text-2xl font-bold mb-8 pl-2 border-l-4 border-[var(--color-primary)]">Select a Game</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {GAMES.map((game, index) => (

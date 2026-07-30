@@ -8,8 +8,17 @@
   --color-surface: #121826;
   --color-surface-hover: #1A2333;
   --color-accent: #FFEA00;
-  
+
   --font-sans: var(--font-inter);
+  --font-display-poster: var(--font-display);
+}
+
+/* Hero "stadium under lights" palette — deep blue-violet counter-glow and
+   near-black vignette, layered against the existing green/gold accents. */
+:root {
+  --stadium-glow-a: #00e676;
+  --stadium-glow-b: #2b5cff;
+  --void: #030509;
 }
 
 :root {
@@ -48,4 +57,56 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #00E676;
+}
+
+/* ---------------------------------------------------------------------- */
+/* FIFA-cover hero                                                        */
+/* ---------------------------------------------------------------------- */
+
+.stadium-lights {
+  background:
+    radial-gradient(60% 50% at 18% 0%, color-mix(in srgb, var(--stadium-glow-a) 22%, transparent) 0%, transparent 70%),
+    radial-gradient(60% 50% at 82% 0%, color-mix(in srgb, var(--stadium-glow-b) 26%, transparent) 0%, transparent 70%),
+    radial-gradient(80% 60% at 50% 100%, color-mix(in srgb, var(--stadium-glow-a) 14%, transparent) 0%, transparent 65%),
+    linear-gradient(180deg, var(--void) 0%, var(--background) 40%, var(--background) 100%);
+}
+
+.hero-headline {
+  font-family: var(--font-display-poster), Arial, Helvetica, sans-serif;
+  letter-spacing: 0.01em;
+  text-shadow:
+    0 0 40px color-mix(in srgb, var(--color-primary) 55%, transparent),
+    0 0 90px color-mix(in srgb, var(--color-primary) 30%, transparent),
+    0 4px 0 rgba(0, 0, 0, 0.35);
+}
+
+.player-wall-fade {
+  -webkit-mask-image: linear-gradient(180deg, black 78%, transparent 100%);
+  mask-image: linear-gradient(180deg, black 78%, transparent 100%);
+}
+
+.fut-card-frame {
+  background: linear-gradient(160deg, color-mix(in srgb, var(--card-accent) 70%, #0b1220) 0%, #0b1220 55%);
+  box-shadow:
+    0 0 0 1.5px color-mix(in srgb, var(--card-accent) 75%, transparent),
+    0 10px 24px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  transition: box-shadow 0.25s ease;
+}
+
+.fut-card:hover .fut-card-frame {
+  box-shadow:
+    0 0 0 2px var(--card-accent),
+    0 0 26px color-mix(in srgb, var(--card-accent) 60%, transparent),
+    0 16px 32px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.fut-card-sheen {
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.16) 0%, transparent 30%, transparent 70%, rgba(255, 255, 255, 0.08) 100%);
+}
+
+.floor-glow {
+  background: radial-gradient(closest-side, var(--glow-color, var(--color-primary)) 0%, transparent 72%);
+  opacity: 0.55;
 }
