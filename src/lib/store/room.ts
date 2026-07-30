@@ -46,6 +46,7 @@ interface RoomStore {
   changeGame: (gameId: string) => void;
   kick: (playerId: string) => void;
   startGame: () => Promise<string | null>;
+  backToLobby: () => Promise<boolean>;
   sendChat: (text: string, emoji?: string) => void;
   clearError: () => void;
 }
@@ -132,6 +133,18 @@ export const useRoomStore = create<RoomStore>((set, get) => {
             return;
           }
           resolve(get().room?.gameId ?? null);
+        });
+      }),
+
+    backToLobby: () =>
+      new Promise((resolve) => {
+        getSocket().emit("room:backToLobby", {}, (res: { ok: boolean; error?: string }) => {
+          if (!res.ok) {
+            set({ error: res.error ?? "Could not return to lobby." });
+            resolve(false);
+            return;
+          }
+          resolve(true);
         });
       }),
 

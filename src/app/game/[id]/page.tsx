@@ -109,7 +109,7 @@ function wrongReasonLabel(reason: string): string {
 
 function TheChainGame() {
   const router = useRouter();
-  const { room, selfId } = useRoomStore();
+  const { room, selfId, backToLobby } = useRoomStore();
   const { state, lastWrong, fireModeBanner, attach, sync, submit, clearFireModeBanner } =
     useChainStore();
   const [guess, setGuess] = useState("");
@@ -186,7 +186,7 @@ function TheChainGame() {
             {state.modifier ? ` through Fire Mode: ${state.modifier.description}` : ""}.
           </p>
           <button
-            onClick={() => router.push(`/room/${room.code}`)}
+            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -348,7 +348,7 @@ function TheChainGame() {
 
 function CareerMazeGame() {
   const router = useRouter();
-  const { room, selfId } = useRoomStore();
+  const { room, selfId, backToLobby } = useRoomStore();
   const { state, lastSolved, attach, sync, submit } = useCareerMazeStore();
   const [guess, setGuess] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -437,7 +437,7 @@ function CareerMazeGame() {
             ))}
           </div>
           <button
-            onClick={() => router.push(`/room/${room.code}`)}
+            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -576,7 +576,7 @@ function CareerMazeGame() {
 
 function WhoAmIGame() {
   const router = useRouter();
-  const { room, selfId } = useRoomStore();
+  const { room, selfId, backToLobby } = useRoomStore();
   const { state, lastSolved, attach, sync, submit } = useWhoAmIStore();
   const [guess, setGuess] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -667,7 +667,7 @@ function WhoAmIGame() {
             ))}
           </div>
           <button
-            onClick={() => router.push(`/room/${room.code}`)}
+            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -829,7 +829,7 @@ function lastManStandingReasonLabel(reason: string | null): string {
 
 function LastManStandingGame() {
   const router = useRouter();
-  const { room, selfId } = useRoomStore();
+  const { room, selfId, backToLobby } = useRoomStore();
   const { state, attach, sync, submit } = useLastManStandingStore();
   const [guess, setGuess] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -908,7 +908,7 @@ function LastManStandingGame() {
             Survived {state.roundNumber} round{state.roundNumber === 1 ? "" : "s"} of Last Man Standing
           </p>
           <button
-            onClick={() => router.push(`/room/${room.code}`)}
+            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -1059,7 +1059,7 @@ function LastManStandingGame() {
 
 function GuessThePlayerGame() {
   const router = useRouter();
-  const { room, selfId, sendChat } = useRoomStore();
+  const { room, selfId, sendChat, backToLobby } = useRoomStore();
   const { state, mySecret, lastGuesses, attach, sync, pick, guess } = useGuessThePlayerStore();
   const [chatText, setChatText] = useState("");
   const [guessText, setGuessText] = useState("");
@@ -1146,7 +1146,7 @@ function GuessThePlayerGame() {
             </div>
           )}
           <button
-            onClick={() => router.push(`/room/${room.code}`)}
+            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -1284,7 +1284,7 @@ function GuessThePlayerGame() {
 
 function FootballPyramidGame() {
   const router = useRouter();
-  const { room, selfId } = useRoomStore();
+  const { room, selfId, backToLobby } = useRoomStore();
   const { state, lastSolved, attach, sync, submit } = useFootballPyramidStore();
   const [guess, setGuess] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -1377,7 +1377,7 @@ function FootballPyramidGame() {
             ))}
           </div>
           <button
-            onClick={() => router.push(`/room/${room.code}`)}
+            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -1572,7 +1572,7 @@ function shirtMadnessReasonLabel(reason: string | null): string {
 
 function ShirtMadnessGame() {
   const router = useRouter();
-  const { room, selfId } = useRoomStore();
+  const { room, selfId, backToLobby } = useRoomStore();
   const { state, attach, sync, submit } = useShirtMadnessStore();
   const [guess, setGuess] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -1664,7 +1664,7 @@ function ShirtMadnessGame() {
             ))}
           </div>
           <button
-            onClick={() => router.push(`/room/${room.code}`)}
+            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby

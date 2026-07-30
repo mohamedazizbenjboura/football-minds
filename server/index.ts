@@ -1399,6 +1399,35 @@ io.on("connection", (socket: Socket) => {
     if (room.shirtMadness) broadcastShirtMadnessState(io, room);
   });
 
+  // Fired from a game's winner screen. Resets the room back to a fresh
+  // pre-match state so the host can pick a game and start again, instead
+  // of every client's room page permanently redirecting back into the
+  // just-finished game (room.started never being cleared was the actual
+  // bug — see PROGRESS.md's 2026-07-29 "live two-tab playtest" entry).
+  socket.on("room:backToLobby", (_payload: unknown, ack?: (res: unknown) => void) => {
+    const room = roomForSocket(socket.id);
+    if (!room) {
+      ack?.({ ok: false, error: "Room not found." });
+      return;
+    }
+    if (!isRoomGameOver(room)) {
+      ack?.({ ok: false, error: "The match hasn't finished yet." });
+      return;
+    }
+
+    room.started = false;
+    room.chain = undefined;
+    room.whoAmI = undefined;
+    room.careerMaze = undefined;
+    room.lastManStanding = undefined;
+    room.guessThePlayer = undefined;
+    room.footballPyramid = undefined;
+    room.shirtMadness = undefined;
+
+    ack?.({ ok: true });
+    broadcastRoomState(io, room);
+  });
+
   socket.on("chat:message", (payload: { text: string; emoji?: string }) => {
     const room = roomForSocket(socket.id);
     const player = room?.players.get(socket.id);
@@ -1693,6 +1722,23 @@ io.on("connection", (socket: Socket) => {
   socket.on("room:leave", () => handleLeave(socket));
   socket.on("disconnect", () => handleLeave(socket));
 });
+
+// True once the currently-active game (if any) has reached a real end
+// state, so `room:backToLobby` can't be used to bail out of a match still
+// in progress and reset everyone's screen out from under them.
+function isRoomGameOver(room: Room): boolean {
+  if (!room.started) return true;
+  if (room.chain) return Boolean(room.chain.winnerId);
+  if (room.whoAmI) return room.whoAmI.phase === "gameEnd";
+  if (room.careerMaze) return room.careerMaze.phase === "gameEnd";
+  if (room.lastManStanding) return room.lastManStanding.phase === "gameEnd";
+  if (room.guessThePlayer) return room.guessThePlayer.phase === "gameEnd";
+  if (room.footballPyramid) return room.footballPyramid.phase === "gameEnd";
+  if (room.shirtMadness) return room.shirtMadness.phase === "gameEnd";
+  // room.started is true but no per-game state object exists yet — treat
+  // as over rather than trap the room in an unrecoverable state.
+  return true;
+}
 
 function roomForSocket(socketId: string): Room | undefined {
   const code = socketRoom.get(socketId);
