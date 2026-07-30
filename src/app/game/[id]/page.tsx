@@ -10,6 +10,16 @@
  * "football-pyramid", and "shirt-madness". Any other id renders an honest
  * "in development" screen instead of a broken/empty page (future ids only,
  * per Build Order §9).
+ *
+ * BUG FIX (live-problems.md — "Guess The Player crashes immediately on
+ * Start Game"): every winner screen's "Back to lobby" button navigates via
+ * `window.location.href` rather than `router.push`, for the same reason
+ * `/room/[code]/page.tsx`'s room:started redirect does (see the comment
+ * there for the full explanation) — a match can run long enough for a new
+ * commit to auto-redeploy underneath it (DEPLOYMENT.md), and a client-side
+ * transition after that point tries to resolve the next route against a
+ * JS bundle that's now stale, which is what actually threw. A real page
+ * load always matches whatever's currently deployed.
  */
 
 import { useEffect, useState } from "react";
@@ -202,7 +212,7 @@ function TheChainGame() {
             {state.modifier ? ` through Fire Mode: ${state.modifier.description}` : ""}.
           </p>
           <button
-            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
+            onClick={() => { backToLobby(); window.location.href = `/room/${room.code}`; }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -453,7 +463,7 @@ function CareerMazeGame() {
             ))}
           </div>
           <button
-            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
+            onClick={() => { backToLobby(); window.location.href = `/room/${room.code}`; }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -683,7 +693,7 @@ function WhoAmIGame() {
             ))}
           </div>
           <button
-            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
+            onClick={() => { backToLobby(); window.location.href = `/room/${room.code}`; }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -924,7 +934,7 @@ function LastManStandingGame() {
             Survived {state.roundNumber} round{state.roundNumber === 1 ? "" : "s"} of Last Man Standing
           </p>
           <button
-            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
+            onClick={() => { backToLobby(); window.location.href = `/room/${room.code}`; }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -1256,7 +1266,7 @@ function GuessThePlayerGame() {
             </div>
           )}
           <button
-            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
+            onClick={() => { backToLobby(); window.location.href = `/room/${room.code}`; }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -1756,7 +1766,7 @@ function FootballPyramidGame() {
             ))}
           </div>
           <button
-            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
+            onClick={() => { backToLobby(); window.location.href = `/room/${room.code}`; }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby
@@ -2043,7 +2053,7 @@ function ShirtMadnessGame() {
             ))}
           </div>
           <button
-            onClick={() => { backToLobby(); router.push(`/room/${room.code}`); }}
+            onClick={() => { backToLobby(); window.location.href = `/room/${room.code}`; }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
           >
             Back to lobby

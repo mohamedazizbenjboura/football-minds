@@ -94,11 +94,41 @@ export default function RoomLobbyPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
+  // BUG FIX (live-problems.md — "Guess The Player crashes immediately on
+  // Start Game"): this used to be `router.push(...)`, a client-side
+  // transition that reuses whatever JS chunks/RSC module registry the tab
+  // already has loaded from whenever THIS page was first opened. Every
+  // session in this project pushes multiple commits while real people are
+  // sitting in a live lobby readying up — Vercel/Render both auto-redeploy
+  // on every push (DEPLOYMENT.md). If a new deploy landed while a tab was
+  // sitting on `/room/[code]`, that tab's already-executing bundle has
+  // never loaded (and, after the old deployment's assets eventually roll
+  // off, may no longer be ABLE to load) the chunks for whatever `/game/[id]`
+  // looks like in the new deployment. `router.push` doesn't reload the
+  // document, so it tries to resolve the new route's React Server
+  // Component/client-reference manifest against the OLD bundle's module
+  // registry and throws `Cannot read properties of undefined (reading
+  // '<hashed-module-id>')` — which is exactly the error signature recorded
+  // in live-problems.md (a webpack/RSC-generated hash, not app source, and
+  // every network request still returning 200 — nothing failed to load,
+  // the already-loaded runtime just doesn't know that module id). This
+  // reproduces 100% of the time in that scenario and 0% of the time in
+  // local dev, where Fast Refresh keeps the running bundle live-patched to
+  // match source on every save, so the two can never drift apart — which
+  // matches exactly what was observed (unreproducible locally, 100%
+  // reproducible live). A full navigation always fetches a fresh HTML
+  // document (and therefore the CURRENT deployment's chunk map) no matter
+  // how long this tab has been open or how many deploys have landed since,
+  // which is the one guarantee a client-side transition can't make here.
+  // The socket reconnects and rejoins the room automatically on the new
+  // page load (see the join-on-mount effect on `/game/[id]`'s equivalent
+  // pattern and this page's own rejoin-from-localStorage effect above), so
+  // there's no state actually lost by paying for a real page load here.
   useEffect(() => {
     if (room?.started && room.gameId) {
-      router.push(`/game/${room.gameId}?room=${room.code}`);
+      window.location.href = `/game/${room.gameId}?room=${room.code}`;
     }
-  }, [room?.started, room?.gameId, room?.code, router]);
+  }, [room?.started, room?.gameId, room?.code]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
