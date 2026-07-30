@@ -28,6 +28,9 @@ import {
   ShieldCheck,
   Check,
   Users2,
+  X,
+  MessageCircleQuestion,
+  Target,
 } from "lucide-react";
 import { useRoomStore } from "@/lib/store/room";
 import { useChainStore, type ChainPosition } from "@/lib/store/chain";
@@ -1075,7 +1078,7 @@ function LastManStandingGame() {
 
 function GuessThePlayerGame() {
   const router = useRouter();
-  const { room, selfId, sendChat, backToLobby } = useRoomStore();
+  const { room, selfId, backToLobby } = useRoomStore();
   const {
     state,
     myTeamProposal,
@@ -1087,11 +1090,18 @@ function GuessThePlayerGame() {
     pick,
     agree,
     guess,
+    askQuestion,
+    answerQuestion,
     sendTeamChat,
   } = useGuessThePlayerStore();
-  const [chatText, setChatText] = useState("");
+  const [questionText, setQuestionText] = useState("");
   const [guessText, setGuessText] = useState("");
   const [teamChatText, setTeamChatText] = useState("");
+  // Turn-gated action picker (Aziz's rule): on your turn, and only on your
+  // turn, you choose exactly one of "ask a question" or "guess the player"
+  // — picking one locks the other for this turn. Resets the moment the
+  // turn moves on (to me or away from me), via the effect below.
+  const [chosenAction, setChosenAction] = useState<"ask" | "guess" | null>(null);
 
   useEffect(() => {
     attach();
@@ -1100,16 +1110,26 @@ function GuessThePlayerGame() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reset the turn-gated action picker whenever the turn moves on (to me or
+  // away from me), derived during render rather than a synchronous setState
+  // inside an effect, matching the existing guessRound reset pattern used by
+  // every other game screen in this file.
+  const [chosenActionAsker, setChosenActionAsker] = useState<string | null>(null);
+  if (state && state.currentAskerId !== chosenActionAsker) {
+    setChosenActionAsker(state.currentAskerId);
+    if (chosenAction !== null) setChosenAction(null);
+  }
+
   function nameOf(id: string | null) {
     return room?.players.find((p) => p.socketId === id)?.displayName ?? "—";
   }
 
-  function handleChatSubmit(e: React.FormEvent) {
+  function handleAskQuestionSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const text = chatText.trim();
+    const text = questionText.trim();
     if (!text) return;
-    sendChat(text);
-    setChatText("");
+    askQuestion(text);
+    setQuestionText("");
   }
 
   function handleTeamChatSubmit(e: React.FormEvent) {
@@ -1160,6 +1180,17 @@ function GuessThePlayerGame() {
   const nonLeaderTeammates = teammates.filter((p) => p.socketId !== state.leaders[myTeam ?? 1]);
   const agreedCount = nonLeaderTeammates.filter((p) => state.agreedIds.includes(p.socketId)).length;
   const iHaveAgreed = selfId ? state.agreedIds.includes(selfId) : false;
+
+  // Turn-based Q&A (Aziz's request): whose turn it is to ask, the pending
+  // question (if any) and whether I'm on the asking or answering side of
+  // it, and my own answer if I've already tapped one.
+  const pendingQuestion = state.currentQuestion;
+  const isMyTurnToAsk = Boolean(selfId && state.currentAskerId === selfId && !pendingQuestion);
+  const amAnsweringSide = Boolean(pendingQuestion && myTeam !== undefined && myTeam !== pendingQuestion.askerTeam);
+  const myAnswer = pendingQuestion && selfId ? pendingQuestion.answers[selfId] : undefined;
+  const answeringTeamMembers = pendingQuestion
+    ? room.players.filter((p) => state.teamOf[p.socketId] === (pendingQuestion.askerTeam === 1 ? 2 : 1))
+    : [];
 
   function teamLabel(team: 1 | 2) {
     const members = room!.players.filter((p) => state!.teamOf[p.socketId] === team);
@@ -1387,33 +1418,189 @@ function GuessThePlayerGame() {
         <span className="font-semibold text-sm truncate">{myTeamProposal}</span>
       </div>
 
-      {/* Yes/no questions — the existing room chat, per spec */}
-      <div className="glass rounded-2xl p-4 flex flex-col gap-2 flex-1 min-h-[16rem]">
-        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Ask yes/no questions</p>
-        <div className="flex-1 overflow-y-auto flex flex-col gap-1.5 max-h-64">
-          {room.chat.map((m) => (
-            <div key={m.id} className="text-sm">
-              <span className="font-semibold text-[var(--color-primary)]">{m.from}:</span>{" "}
-              <span className="text-gray-300">{m.text}</span>
-            </div>
-          ))}
+      {/* Turn-based Q&A (Aziz's request, PROJECT_SPEC.md §5.1): strict turn
+          order alternating between teams, Yes/No buttons instead of
+          free-text answers, and a live poll of who answered what. */}
+      <div className="glass rounded-2xl p-4 flex flex-col gap-3 flex-1 min-h-[16rem]">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Questions</p>
+          <span className="text-xs font-semibold text-gray-400">
+            {pendingQuestion
+              ? `Waiting on ${teamLabel(pendingQuestion.askerTeam === 1 ? 2 : 1)}`
+              : `${nameOf(state.currentAskerId)}'s turn to ask`}
+          </span>
         </div>
-        <form onSubmit={handleChatSubmit} className="flex gap-2 pt-2">
-          <input
-            value={chatText}
-            onChange={(e) => setChatText(e.target.value)}
-            placeholder="Does he play in the Premier League?"
-            className="flex-1 h-11 px-3 rounded-xl bg-white/5 border border-white/10 focus:border-[var(--color-primary)] outline-none text-sm"
-          />
-          <button
-            type="submit"
-            disabled={!chatText.trim()}
-            className="w-11 h-11 rounded-xl bg-white/10 text-white flex items-center justify-center shrink-0 disabled:opacity-40 hover:bg-white/20 transition-colors"
-            aria-label="Send"
+
+        {/* Turn-gated action picker (Aziz's rule): on your turn, and only
+            on your turn, you choose exactly one of "Ask a Question" or
+            "Guess the Player" — picking one locks the other for this turn.
+            Only rendered for the current asker, only while no question is
+            pending. */}
+        {isMyTurnToAsk && chosenAction === null && (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setChosenAction("ask")}
+              className="flex-1 h-12 rounded-xl bg-white/10 text-white font-bold flex items-center justify-center gap-2 hover:bg-white/20 transition-colors"
+            >
+              <MessageCircleQuestion size={18} /> Ask a Question
+            </button>
+            <button
+              type="button"
+              onClick={() => setChosenAction("guess")}
+              className="flex-1 h-12 rounded-xl bg-[var(--color-accent)]/15 text-[var(--color-accent)] font-bold flex items-center justify-center gap-2 hover:bg-[var(--color-accent)]/25 transition-colors"
+            >
+              <Target size={18} /> Guess the Player
+            </button>
+          </div>
+        )}
+
+        {isMyTurnToAsk && chosenAction === "ask" && (
+          <form onSubmit={handleAskQuestionSubmit} className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => setChosenAction(null)}
+              className="self-start text-xs text-gray-400 hover:text-white font-semibold"
+            >
+              ← choose again
+            </button>
+            <div className="flex gap-2">
+              <input
+                value={questionText}
+                onChange={(e) => setQuestionText(e.target.value)}
+                placeholder="Does he play in the Premier League?"
+                className="flex-1 h-11 px-3 rounded-xl bg-white/5 border border-white/10 focus:border-[var(--color-primary)] outline-none text-sm"
+                autoFocus
+              />
+              <button
+                type="submit"
+                disabled={!questionText.trim()}
+                className="w-11 h-11 rounded-xl bg-white/10 text-white flex items-center justify-center shrink-0 disabled:opacity-40 hover:bg-white/20 transition-colors"
+                aria-label="Send"
+              >
+                <Send size={18} />
+              </button>
+            </div>
+          </form>
+        )}
+
+        {isMyTurnToAsk && chosenAction === "guess" && (
+          <form
+            onSubmit={(e) => {
+              handleGuessSubmit(e);
+              setChosenAction(null);
+            }}
+            className="flex flex-col gap-2"
           >
-            <Send size={18} />
-          </button>
-        </form>
+            <button
+              type="button"
+              onClick={() => setChosenAction(null)}
+              className="self-start text-xs text-gray-400 hover:text-white font-semibold"
+            >
+              ← choose again
+            </button>
+            <div className="flex gap-2">
+              <input
+                value={guessText}
+                onChange={(e) => setGuessText(e.target.value)}
+                placeholder="Make your guess: who is it?"
+                className="flex-1 h-11 px-3 rounded-xl bg-white/5 border-2 border-[var(--color-accent)]/40 focus:border-[var(--color-accent)] outline-none text-sm font-semibold"
+                autoFocus
+              />
+              <button
+                type="submit"
+                disabled={!guessText.trim()}
+                className="h-11 px-4 rounded-xl bg-[var(--color-accent)] text-black font-bold flex items-center justify-center shrink-0 disabled:opacity-40 hover:brightness-95 transition-all"
+              >
+                Guess
+              </button>
+            </div>
+          </form>
+        )}
+
+        {!isMyTurnToAsk && !pendingQuestion && (
+          <p className="text-sm text-gray-500 italic">
+            Waiting for {nameOf(state.currentAskerId)} to ask a question…
+          </p>
+        )}
+
+        {/* Pending question — text + Yes/No buttons for the answering side,
+            live poll for everyone. */}
+        {pendingQuestion && (
+          <div className="rounded-xl bg-white/5 border border-white/10 p-3 flex flex-col gap-3">
+            <p className="text-sm">
+              <span className="font-semibold text-[var(--color-primary)]">{nameOf(pendingQuestion.askerId)}:</span>{" "}
+              <span className="text-gray-200">{pendingQuestion.text}</span>
+            </p>
+
+            {amAnsweringSide && !myAnswer && (
+              <div className="flex gap-2">
+                <button
+                  onClick={() => answerQuestion("yes")}
+                  className="flex-1 h-11 rounded-xl bg-[var(--color-primary)]/15 text-[var(--color-primary)] font-bold flex items-center justify-center gap-1.5 hover:bg-[var(--color-primary)]/25 transition-colors"
+                >
+                  <Check size={16} /> Yes
+                </button>
+                <button
+                  onClick={() => answerQuestion("no")}
+                  className="flex-1 h-11 rounded-xl bg-red-500/15 text-red-400 font-bold flex items-center justify-center gap-1.5 hover:bg-red-500/25 transition-colors"
+                >
+                  <X size={16} /> No
+                </button>
+              </div>
+            )}
+
+            {/* Live poll — who's answered Yes/No so far vs still thinking */}
+            <div className="flex flex-wrap gap-1.5">
+              {answeringTeamMembers.map((p) => {
+                const ans = pendingQuestion.answers[p.socketId];
+                return (
+                  <span
+                    key={p.socketId}
+                    className={`flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full ${
+                      ans === "yes"
+                        ? "bg-[var(--color-primary)]/15 text-[var(--color-primary)]"
+                        : ans === "no"
+                        ? "bg-red-500/15 text-red-400"
+                        : "bg-white/5 text-gray-500"
+                    }`}
+                  >
+                    {ans === "yes" && <Check size={11} />}
+                    {ans === "no" && <X size={11} />}
+                    {p.displayName}
+                    {p.socketId === selfId ? " (you)" : ""}
+                    {!ans ? " · thinking…" : ""}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Question history */}
+        {state.questionHistory.length > 0 && (
+          <div className="flex flex-col gap-1.5 pt-1 border-t border-white/10 max-h-40 overflow-y-auto">
+            {state.questionHistory
+              .slice()
+              .reverse()
+              .map((q) => {
+                const yesCount = Object.values(q.answers).filter((a) => a === "yes").length;
+                const noCount = Object.values(q.answers).filter((a) => a === "no").length;
+                return (
+                  <div key={q.id} className="text-xs text-gray-400 px-1">
+                    <span className="font-semibold text-gray-300">{nameOf(q.askerId)}</span>
+                    {": "}
+                    {q.text}
+                    <span className="text-gray-500">
+                      {" "}
+                      — <span className="text-[var(--color-primary)]">{yesCount} yes</span>,{" "}
+                      <span className="text-red-400">{noCount} no</span>
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
+        )}
       </div>
 
       {/* Guess log — separate from chat, since a guess is a deliberate action, not a question */}
@@ -1430,21 +1617,6 @@ function GuessThePlayerGame() {
         </div>
       )}
 
-      <form onSubmit={handleGuessSubmit} className="flex gap-2">
-        <input
-          value={guessText}
-          onChange={(e) => setGuessText(e.target.value)}
-          placeholder="Make your guess: who is it?"
-          className="flex-1 h-14 px-4 rounded-xl bg-white/5 border-2 border-[var(--color-accent)]/40 focus:border-[var(--color-accent)] outline-none font-semibold"
-        />
-        <button
-          type="submit"
-          disabled={!guessText.trim()}
-          className="h-14 px-5 rounded-xl bg-[var(--color-accent)] text-black font-bold flex items-center justify-center shrink-0 disabled:opacity-40 hover:brightness-95 transition-all"
-        >
-          Guess
-        </button>
-      </form>
     </main>
   );
 }

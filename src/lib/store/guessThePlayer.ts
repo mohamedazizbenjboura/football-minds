@@ -14,6 +14,18 @@ import { getSocket } from "@/lib/socket";
 
 export type GuessThePlayerPhase = "picking" | "playing" | "gameEnd";
 
+// FEATURE (Aziz's request): a single question in the turn-based Q&A. Only
+// members of the team OPPOSING `askerTeam` ever appear in `answers`, and
+// they're revealed live as each teammate answers (the "poll"), not held
+// back until everyone's in.
+export interface GuessThePlayerQuestion {
+  id: string;
+  askerId: string;
+  askerTeam: 1 | 2;
+  text: string;
+  answers: Record<string, "yes" | "no">;
+}
+
 export interface GuessThePlayerPublicState {
   order: string[]; // every participating socketId, both teams combined
   teamOf: Record<string, 1 | 2>;
@@ -25,6 +37,16 @@ export interface GuessThePlayerPublicState {
   winnerId: string | null;
   forfeited: boolean;
   secrets: Record<"1" | "2", string | null> | null; // revealed only once phase === "gameEnd"
+  // Turn-based Q&A (Aziz's request) — only meaningful once phase === "playing".
+  currentAskerId: string | null;
+  currentQuestion: GuessThePlayerQuestion | null;
+  questionHistory: GuessThePlayerQuestion[];
+  // Per-turn countdown deadline (Aziz's request: every player turn is
+  // timed) — ms since epoch, or null when nobody's turn is currently being
+  // timed (picking/gameEnd). Covers both the current asker's window to
+  // choose Ask/Guess and, once a question is asked, the opposing team's
+  // window to answer it.
+  turnEndsAt: number | null;
 }
 
 export interface GuessThePlayerGuessEvent {
@@ -52,6 +74,8 @@ interface GuessThePlayerStore {
   pick: (name: string) => void;
   agree: () => void;
   guess: (name: string) => void;
+  askQuestion: (text: string) => void;
+  answerQuestion: (answer: "yes" | "no") => void;
   sendTeamChat: (text: string) => void;
   reset: () => void;
 }
@@ -109,6 +133,18 @@ export const useGuessThePlayerStore = create<GuessThePlayerStore>((set) => ({
 
   guess: (name: string) => {
     getSocket().emit("guessplayer:guess", { name });
+  },
+
+  // Ask a question on my turn (server enforces turn order + one pending
+  // question at a time — this just fires the event).
+  askQuestion: (text: string) => {
+    getSocket().emit("guessplayer:askQuestion", { text });
+  },
+
+  // Answer the currently pending question with a Yes/No tap (server
+  // enforces that only the opposing team, once each, may answer).
+  answerQuestion: (answer: "yes" | "no") => {
+    getSocket().emit("guessplayer:answerQuestion", { answer });
   },
 
   sendTeamChat: (text: string) => {

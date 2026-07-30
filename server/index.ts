@@ -90,6 +90,8 @@ const FOOTBALL_PYRAMID_POST_LAST_CLUE_MS = 6000; // grace period after the final
 const SHIRT_MADNESS_ROUNDS = 5;
 const SHIRT_MADNESS_ANSWER_SECONDS = 15; // time everyone has to submit one player per round
 const SHIRT_MADNESS_ROUND_END_DELAY_MS = 5000; // pause showing round results before the next number/game end
+const GUESS_THE_PLAYER_ASK_SECONDS = 30; // time the current asker has to choose Ask/Guess and submit it
+const GUESS_THE_PLAYER_ANSWER_SECONDS = 20; // time the opposing team has to answer a pending question
 
 // ---------------------------------------------------------------------------
 // Types
@@ -199,6 +201,17 @@ interface LastManStandingGameState {
   winnerId: string | null; // null both before the game ends and in a no-survivors draw
 }
 
+interface GuessThePlayerQuestion {
+  id: string;
+  askerId: string;
+  askerTeam: 1 | 2;
+  text: string;
+  // Only ever populated by members of the OPPOSING team from askerTeam.
+  // Revealed live as each teammate answers ("sondage"/poll), not held back
+  // until everyone's answered.
+  answers: Record<string, "yes" | "no">;
+}
+
 interface GuessThePlayerGameState {
   // FEATURE (Aziz's request): team-based, covering every mode from 1v1 up
   // to 10v10 through ONE model — exactly two teams, each with N members
@@ -220,6 +233,31 @@ interface GuessThePlayerGameState {
   winnerTeam: 1 | 2 | null;
   winnerId: string | null; // the specific player whose guess won it (null on a no-winner forfeit)
   forfeited: boolean; // true if the game ended early because a whole team disconnected
+  // FEATURE (Aziz's request): turn-based Q&A once the game reaches
+  // "playing". `questionOrder` interleaves both team rosters one player at
+  // a time (Team1[0], Team2[0], Team1[1], Team2[1], ...) so the turn to
+  // ask always alternates teams. `askerIndex` is a raw pointer into that
+  // array — use `currentAsker()` to resolve it to the next CONNECTED
+  // player rather than reading questionOrder[askerIndex] directly, since a
+  // disconnect shouldn't stall the turn order. `currentQuestion` is null
+  // exactly when it's the current asker's turn to submit a question; once
+  // they do, it holds that question until every currently-connected member
+  // of the OPPOSING team has answered Yes/No, at which point it's pushed
+  // onto `questionHistory` and the turn advances. Submitting a final guess
+  // via `guessplayer:guess` is completely independent of all of this — any
+  // player, on either team, may guess at any time regardless of turn.
+  questionOrder: string[];
+  askerIndex: number;
+  currentQuestion: GuessThePlayerQuestion | null;
+  questionHistory: GuessThePlayerQuestion[];
+  // FEATURE (Aziz's request): every player turn is timed. `turnEndsAt` is
+  // whichever deadline is currently active — the current asker's window to
+  // choose Ask/Guess and submit it (GUESS_THE_PLAYER_ASK_SECONDS), or, once
+  // they've asked, the opposing team's window to answer Yes/No
+  // (GUESS_THE_PLAYER_ANSWER_SECONDS). Sent to clients for a countdown;
+  // `timer` is the server-side setTimeout that actually enforces it.
+  turnEndsAt: number | null;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 interface FootballPyramidGameState {
@@ -875,20 +913,28 @@ function broadcastLastManStandingState(io: Server, room: Room) {
 // ---------------------------------------------------------------------------
 // Guess The Player — game logic (PROJECT_SPEC.md §5.1 "Guess The Player")
 //
-// Team-based across every supported mode, 1v1 through 10v10 (see
+// Team-based across every supported mode, 1v1 through 5v5 (see
 // `GuessThePlayerGameState`'s own header comment for the full model). Once
 // both teams' secrets are locked in (instantly for 1v1, via the leader/
-// agree flow for 2v2+), the phase flips to "playing" and any player on
-// either team can submit a guess at any time via `guessplayer:guess` — no
-// turn order, a free-for-all duel between the two teams. The actual
-// yes/no questions happen over the existing room chat (`chat:message`),
-// not a game-specific event. A guess that matches the OPPOSING team's
-// secret (case/accent-insensitive) wins immediately for the whole team and
-// reveals both secrets to the room. Each team's own proposed/locked secret
-// is only ever emitted privately to that team's Socket.IO room
-// (`guessplayer:teamSecret`, sent to `teamRoomName(code, team)`) — never
-// the room-wide broadcast — so "shown as a real <PlayerAvatar/> only to its
-// owner('s team)" actually holds server-side, not just in the UI.
+// agree flow for 2v2+), the phase flips to "playing" and turns to act
+// alternate strictly between the two teams, one player at a time
+// (`questionOrder`/`askerIndex`, see below). On their turn, and ONLY on
+// their turn, the current asker picks exactly one of two actions:
+// - Ask a question (`guessplayer:askQuestion`): opposing-team members
+//   answer Yes/No (`guessplayer:answerQuestion`), revealed live as a poll;
+//   once every connected opposing-team member has answered, the turn
+//   advances.
+// - Guess the opposing team's secret (`guessplayer:guess`): resolves
+//   immediately — a correct guess wins the match for the whole team and
+//   reveals both secrets; a miss simply advances the turn, same as a
+//   fully-answered question.
+// No other player — not a teammate whose turn it isn't, not anyone on the
+// opposing team — may ask or guess out of turn. Each team's own
+// proposed/locked secret is only ever emitted privately to that team's
+// Socket.IO room (`guessplayer:teamSecret`, sent to
+// `teamRoomName(code, team)`) — never the room-wide broadcast — so "shown
+// as a real <PlayerAvatar/> only to its owner('s team)" actually holds
+// server-side, not just in the UI.
 // ---------------------------------------------------------------------------
 
 function guessThePlayerTeamMembers(room: Room, team: 1 | 2): string[] {
@@ -903,6 +949,149 @@ function guessThePlayerTeamMembers(room: Room, team: 1 | 2): string[] {
 function guessThePlayerLeader(room: Room, team: 1 | 2): string | null {
   const members = guessThePlayerTeamMembers(room, team).filter((id) => room.players.has(id));
   return members[0] ?? null;
+}
+
+// FEATURE (Aziz's request): turns to ASK a question alternate strictly
+// between the two teams, one player at a time — e.g. in 2v2:
+// Team1[0], Team2[0], Team1[1], Team2[1], looping back to Team1[0]. Built
+// once, right when the game flips from "picking" to "playing" (team
+// rosters are locked in by then, so this never needs to change size later
+// — only the pointer into it moves as players disconnect).
+function buildGuessThePlayerQuestionOrder(room: Room): string[] {
+  const team1 = guessThePlayerTeamMembers(room, 1);
+  const team2 = guessThePlayerTeamMembers(room, 2);
+  const order: string[] = [];
+  const maxLen = Math.max(team1.length, team2.length);
+  for (let i = 0; i < maxLen; i++) {
+    if (team1[i]) order.push(team1[i]);
+    if (team2[i]) order.push(team2[i]);
+  }
+  return order;
+}
+
+// Resolves `askerIndex` to the next actually-CONNECTED player in
+// `questionOrder`, normalizing the stored index as a side effect so a
+// disconnected asker's turn is silently handed to whoever's next rather
+// than stalling the game. Returns null only if nobody in the order is
+// connected anymore (which shouldn't happen — a fully-empty team already
+// ends the match by forfeit before this could be reached).
+function guessThePlayerCurrentAsker(room: Room): string | null {
+  const g = room.guessThePlayer;
+  if (!g || g.questionOrder.length === 0) return null;
+  const n = g.questionOrder.length;
+  for (let i = 0; i < n; i++) {
+    const idx = (g.askerIndex + i) % n;
+    const id = g.questionOrder[idx];
+    if (room.players.has(id)) {
+      g.askerIndex = idx;
+      return id;
+    }
+  }
+  return null;
+}
+
+function guessThePlayerAdvanceTurn(room: Room) {
+  const g = room.guessThePlayer;
+  if (!g || g.questionOrder.length === 0) return;
+  g.askerIndex = (g.askerIndex + 1) % g.questionOrder.length;
+  guessThePlayerCurrentAsker(room); // normalize immediately in case the new spot is disconnected too
+}
+
+// Every currently-connected member of the team OPPOSING `askingTeam` — the
+// exact set required to answer a pending question before it resolves.
+function guessThePlayerOpposingConnected(room: Room, askingTeam: 1 | 2): string[] {
+  const opponent: 1 | 2 = askingTeam === 1 ? 2 : 1;
+  return guessThePlayerTeamMembers(room, opponent).filter((id) => room.players.has(id));
+}
+
+// Once every required opposing-team member has answered the pending
+// question (or that set is empty, e.g. they've all disconnected — this
+// keeps the turn from stalling forever), archive it to history and
+// advance the turn. No-ops if the question isn't fully answered yet.
+function guessThePlayerMaybeResolveQuestion(io: Server, room: Room) {
+  const g = room.guessThePlayer;
+  if (!g || !g.currentQuestion) return;
+  const required = guessThePlayerOpposingConnected(room, g.currentQuestion.askerTeam);
+  const allAnswered = required.every((id) => g.currentQuestion!.answers[id] !== undefined);
+  if (!allAnswered) return;
+
+  g.questionHistory.push(g.currentQuestion);
+  if (g.questionHistory.length > 30) g.questionHistory.shift();
+  g.currentQuestion = null;
+  guessThePlayerAdvanceTurn(room);
+  // The next asker's turn just started — give them a fresh ask window
+  // (Aziz's request: every turn is timed). Without this the countdown
+  // only ever ran for the very first turn of the match.
+  startGuessThePlayerAskTimer(io, room);
+}
+
+// --- Turn timer (Aziz's request) --------------------------------------
+// Two back-to-back deadlines, reusing the same `g.timer`/`g.turnEndsAt`
+// slot since only one is ever active at once: the ASK window (current
+// asker choosing Ask/Guess and submitting it) and, once a question is
+// actually asked, the ANSWER window (opposing team tapping Yes/No). Both
+// timeouts are "soft" — nobody is eliminated, the turn just keeps moving,
+// matching the no-penalty timeout pattern already used elsewhere (Who Am
+// I?'s unsolved round, Football Pyramid's grace period).
+
+function clearGuessThePlayerTimer(room: Room) {
+  const g = room.guessThePlayer;
+  if (g?.timer) {
+    clearTimeout(g.timer);
+    g.timer = null;
+  }
+}
+
+function startGuessThePlayerAskTimer(io: Server, room: Room) {
+  const g = room.guessThePlayer;
+  if (!g || g.phase !== "playing") return;
+  clearGuessThePlayerTimer(room);
+  g.turnEndsAt = Date.now() + GUESS_THE_PLAYER_ASK_SECONDS * 1000;
+  g.timer = setTimeout(
+    () => handleGuessThePlayerAskTimeout(io, room),
+    GUESS_THE_PLAYER_ASK_SECONDS * 1000
+  );
+}
+
+function startGuessThePlayerAnswerTimer(io: Server, room: Room) {
+  const g = room.guessThePlayer;
+  if (!g || g.phase !== "playing") return;
+  clearGuessThePlayerTimer(room);
+  g.turnEndsAt = Date.now() + GUESS_THE_PLAYER_ANSWER_SECONDS * 1000;
+  g.timer = setTimeout(
+    () => handleGuessThePlayerAnswerTimeout(io, room),
+    GUESS_THE_PLAYER_ANSWER_SECONDS * 1000
+  );
+}
+
+// The current asker didn't ask or guess in time — silently pass the turn,
+// no penalty, and start the next asker's own ask window.
+function handleGuessThePlayerAskTimeout(io: Server, room: Room) {
+  const g = room.guessThePlayer;
+  if (!g || g.phase !== "playing" || g.currentQuestion) return; // already acted / no longer relevant
+  guessThePlayerAdvanceTurn(room);
+  startGuessThePlayerAskTimer(io, room);
+  broadcastGuessThePlayerState(io, room);
+}
+
+// Anyone on the opposing team who hasn't answered by the deadline is
+// counted as "No" by default so the poll can resolve and the turn keeps
+// moving instead of stalling on one silent player.
+function handleGuessThePlayerAnswerTimeout(io: Server, room: Room) {
+  const g = room.guessThePlayer;
+  if (!g || g.phase !== "playing" || !g.currentQuestion) return;
+  const required = guessThePlayerOpposingConnected(room, g.currentQuestion.askerTeam);
+  for (const id of required) {
+    if (g.currentQuestion.answers[id] === undefined) {
+      g.currentQuestion.answers[id] = "no";
+    }
+  }
+  g.questionHistory.push(g.currentQuestion);
+  if (g.questionHistory.length > 30) g.questionHistory.shift();
+  g.currentQuestion = null;
+  guessThePlayerAdvanceTurn(room);
+  startGuessThePlayerAskTimer(io, room);
+  broadcastGuessThePlayerState(io, room);
 }
 
 function initGuessThePlayerGame(room: Room) {
@@ -932,6 +1121,12 @@ function initGuessThePlayerGame(room: Room) {
     winnerTeam: null,
     winnerId: null,
     forfeited: false,
+    questionOrder: [],
+    askerIndex: 0,
+    currentQuestion: null,
+    questionHistory: [],
+    turnEndsAt: null,
+    timer: null,
   };
 }
 
@@ -953,6 +1148,15 @@ function publicGuessThePlayerState(room: Room) {
     forfeited: g.forfeited,
     // Full reveal only once the game is over.
     secrets: g.phase === "gameEnd" ? g.secrets : null,
+    // Turn-based Q&A (Aziz's request) — only meaningful once "playing".
+    // `guessThePlayerCurrentAsker` also normalizes `askerIndex` past any
+    // disconnected player as a side effect, so read it fresh every time.
+    currentAskerId: g.phase === "playing" ? guessThePlayerCurrentAsker(room) : null,
+    currentQuestion: g.currentQuestion,
+    questionHistory: g.questionHistory,
+    // Per-turn countdown (Aziz's request) — null once the game isn't
+    // actively waiting on anyone (picking/gameEnd).
+    turnEndsAt: g.phase === "playing" ? g.turnEndsAt : null,
   };
 }
 
@@ -969,6 +1173,8 @@ function endGuessThePlayerGame(
 ) {
   const g = room.guessThePlayer;
   if (!g || g.phase === "gameEnd") return;
+  clearGuessThePlayerTimer(room); // no more turns to time once the match is over
+  g.turnEndsAt = null;
   g.phase = "gameEnd";
   g.winnerTeam = winnerTeam;
   g.winnerId = winnerId;
@@ -980,7 +1186,7 @@ function endGuessThePlayerGame(
 // CURRENT proposal (a team of 1, e.g. 1v1, needs zero agreements — the
 // leader's own proposal is instantly final, exactly like the old 1v1 flow).
 // Flips the whole game to "playing" once BOTH teams are locked.
-function tryLockGuessThePlayerTeam(room: Room, team: 1 | 2) {
+function tryLockGuessThePlayerTeam(io: Server, room: Room, team: 1 | 2) {
   const g = room.guessThePlayer;
   if (!g || g.locked[team] || !g.proposedSecret[team]) return;
 
@@ -992,7 +1198,16 @@ function tryLockGuessThePlayerTeam(room: Room, team: 1 | 2) {
   if (agreedCount >= required) {
     g.secrets[team] = g.proposedSecret[team];
     g.locked[team] = true;
-    if (g.locked[1] && g.locked[2]) g.phase = "playing";
+    if (g.locked[1] && g.locked[2]) {
+      g.phase = "playing";
+      // Set up the alternating-turn question order right as the duel
+      // begins (Aziz's request) — team rosters are final at this point.
+      g.questionOrder = buildGuessThePlayerQuestionOrder(room);
+      g.askerIndex = 0;
+      guessThePlayerCurrentAsker(room); // normalize in the unlikely event slot 0 is already disconnected
+      // Kick off the first turn's timer (Aziz's request: every turn is timed).
+      startGuessThePlayerAskTimer(io, room);
+    }
   }
 }
 
@@ -1829,7 +2044,7 @@ io.on("connection", (socket: Socket) => {
 
     io.to(teamRoomName(room.code, myTeam)).emit("guessplayer:teamSecret", { name: raw });
 
-    tryLockGuessThePlayerTeam(room, myTeam);
+    tryLockGuessThePlayerTeam(io, room, myTeam);
     broadcastGuessThePlayerState(io, room);
   });
 
@@ -1845,14 +2060,24 @@ io.on("connection", (socket: Socket) => {
     if (!g.proposedSecret[myTeam]) return; // nothing proposed yet
 
     g.agreedIds.add(socket.id);
-    tryLockGuessThePlayerTeam(room, myTeam);
+    tryLockGuessThePlayerTeam(io, room, myTeam);
     broadcastGuessThePlayerState(io, room);
   });
 
+  // FEATURE UPDATE (Aziz's request): guessing is no longer free-for-all —
+  // it is now the current asker's EXCLUSIVE alternative to asking a
+  // question, gated by the exact same turn as `guessplayer:askQuestion`.
+  // Only the current asker may call this, and only when no question is
+  // currently pending (i.e. they haven't already used this turn to ask).
+  // A correct guess wins the game immediately, same as before. A miss now
+  // consumes the turn — it advances to the next asker exactly as a fully-
+  // answered question would, instead of leaving turn state untouched.
   socket.on("guessplayer:guess", (payload: { name: string }) => {
     const room = roomForSocket(socket.id);
     const g = room?.guessThePlayer;
     if (!room || !g || g.phase !== "playing") return;
+    if (g.currentQuestion) return; // this turn's already been spent asking a pending question
+    if (guessThePlayerCurrentAsker(room) !== socket.id) return; // only the current asker may guess, and only on their turn
 
     const myTeam = g.teamOf[socket.id];
     if (!myTeam) return;
@@ -1871,7 +2096,69 @@ io.on("connection", (socket: Socket) => {
 
     if (namesMatch(raw, opponentSecret)) {
       endGuessThePlayerGame(io, room, myTeam, socket.id, false);
+    } else {
+      // A miss still uses up the turn, same as a question that's been
+      // fully answered — pass the turn to the next player in the order,
+      // and give them a fresh ask window (Aziz's request: every turn is
+      // timed).
+      guessThePlayerAdvanceTurn(room);
+      startGuessThePlayerAskTimer(io, room);
+      broadcastGuessThePlayerState(io, room);
     }
+  });
+
+  // Ask a question — only the current asker may call this, and only when
+  // no question is currently pending an answer (Aziz's request: strict
+  // turn order, one question resolved at a time before the next is asked).
+  socket.on("guessplayer:askQuestion", (payload: { text: string }) => {
+    const room = roomForSocket(socket.id);
+    const g = room?.guessThePlayer;
+    if (!room || !g || g.phase !== "playing") return;
+    if (g.currentQuestion) return; // a question is already pending an answer
+    if (guessThePlayerCurrentAsker(room) !== socket.id) return; // not your turn
+
+    const text = (payload?.text ?? "").trim().slice(0, 300);
+    if (!text) return;
+
+    g.currentQuestion = {
+      id: `${Date.now()}-${socket.id}`,
+      askerId: socket.id,
+      askerTeam: g.teamOf[socket.id],
+      text,
+      answers: {},
+    };
+
+    // Question asked — switch from the asker's own ask-window deadline to
+    // the opposing team's answer-window deadline (Aziz's request: every
+    // turn is timed, including waiting on an answer).
+    startGuessThePlayerAnswerTimer(io, room);
+
+    // Covers the edge case where the opposing team has nobody currently
+    // connected — resolves (and advances the turn) immediately instead of
+    // leaving the question stuck forever waiting on an empty answer set.
+    guessThePlayerMaybeResolveQuestion(io, room);
+    broadcastGuessThePlayerState(io, room);
+  });
+
+  // Answer the pending question with a Yes/No tap — only a currently-
+  // connected member of the OPPOSING team may answer, once each. Answers
+  // are revealed live in the broadcast state as they come in (the "poll"),
+  // not held back until everyone's answered.
+  socket.on("guessplayer:answerQuestion", (payload: { answer: "yes" | "no" }) => {
+    const room = roomForSocket(socket.id);
+    const g = room?.guessThePlayer;
+    if (!room || !g || g.phase !== "playing" || !g.currentQuestion) return;
+
+    const myTeam = g.teamOf[socket.id];
+    if (!myTeam || myTeam === g.currentQuestion.askerTeam) return; // only the opposing team answers
+    if (g.currentQuestion.answers[socket.id]) return; // already answered this question
+
+    const answer = payload?.answer;
+    if (answer !== "yes" && answer !== "no") return;
+
+    g.currentQuestion.answers[socket.id] = answer;
+    guessThePlayerMaybeResolveQuestion(io, room);
+    broadcastGuessThePlayerState(io, room);
   });
 
   // --- Football Pyramid ---------------------------------------------------
@@ -2037,8 +2324,26 @@ function handleLeave(socket: Socket) {
       // been mid-proposal; re-run the lock check in case the departure
       // changes who's required to agree (e.g. the required-agreement count
       // just dropped because the team is smaller now).
-      tryLockGuessThePlayerTeam(room, 1);
-      tryLockGuessThePlayerTeam(room, 2);
+      tryLockGuessThePlayerTeam(io, room, 1);
+      tryLockGuessThePlayerTeam(io, room, 2);
+      broadcastGuessThePlayerState(io, room);
+    } else if (g.phase === "playing") {
+      // Both teams still have players. If a question was pending and the
+      // departing player was one of the required answerers, the required
+      // set just shrank — check whether that's enough to resolve it now.
+      // Either way, re-resolve the current asker so a departing asker's
+      // turn is silently handed to the next connected player rather than
+      // stalling the game (Aziz's request: turns must keep moving).
+      const askerBefore = guessThePlayerCurrentAsker(room);
+      if (g.currentQuestion) guessThePlayerMaybeResolveQuestion(io, room);
+      const askerAfter = guessThePlayerCurrentAsker(room);
+      // If the asker changed (departing player was the asker, or was a
+      // required answerer whose departure just resolved the question),
+      // give the new asker a fresh ask window rather than leaving the old
+      // deadline (which may already be an answer-window timer) running.
+      if (askerAfter !== askerBefore || (!g.currentQuestion && g.turnEndsAt === null)) {
+        startGuessThePlayerAskTimer(io, room);
+      }
       broadcastGuessThePlayerState(io, room);
     }
   }
