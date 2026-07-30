@@ -32,11 +32,29 @@
 import { normalizeName } from "./chainEngine";
 
 /** Case/accent/whitespace-insensitive comparison, reusing the same
- * normalization every other game already uses for name matching. */
+ * normalization every other game already uses for name matching.
+ *
+ * BUG FIX (live-problems.md): this used to require an exact full-name
+ * match, so guessing "Ronaldo" against a secret pick of "Cristiano
+ * Ronaldo" silently failed — the guess showed up in the guess log but no
+ * win was ever declared, with no error either. This game has no dataset
+ * to resolve free text against (see file header), so it can't reuse
+ * chainEngine.ts's resolvePlayer() directly — instead, a single-word
+ * guess is now also allowed to match just the LAST word of the other
+ * name, which is the closest equivalent for two arbitrary free-text
+ * strings and matches how people actually type in a fast party game. */
 export function namesMatch(a: string, b: string): boolean {
   const na = normalizeName(a);
   const nb = normalizeName(b);
-  return na.length > 0 && na === nb;
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+
+  const aWords = na.split(" ");
+  const bWords = nb.split(" ");
+  if (aWords.length === 1 && bWords[bWords.length - 1] === na) return true;
+  if (bWords.length === 1 && aWords[aWords.length - 1] === nb) return true;
+
+  return false;
 }
 
 /** A pick is valid if it's non-empty after trimming — no dataset/API check

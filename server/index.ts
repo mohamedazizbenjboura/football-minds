@@ -95,7 +95,11 @@ const SHIRT_MADNESS_ROUND_END_DELAY_MS = 5000; // pause showing round results be
 // Types
 // ---------------------------------------------------------------------------
 
-type RoomMode = "1v1" | "2v2" | "ffa";
+type RoomMode = "1v1" | "2v2" | "3v3" | "4v4" | "5v5" | "ffa";
+// Every team-vs-team size Guess The Player supports (1v1 through 5v5).
+// "ffa" is a separate, teamless mode used by every OTHER game.
+const TEAM_MODES: RoomMode[] = ["1v1", "2v2", "3v3", "4v4", "5v5"];
+const VALID_ROOM_MODES: RoomMode[] = [...TEAM_MODES, "ffa"];
 type GameId =
   | "guess-the-player"
   | "who-am-i"
@@ -110,7 +114,7 @@ interface RoomPlayer {
   displayName: string;
   ready: boolean;
   isHost: boolean;
-  team?: 1 | 2; // used for 2v2
+  team?: 1 | 2; // which side of a team mode (2v2..10v10) they've joined in the lobby
   connected: boolean;
 }
 
@@ -196,11 +200,26 @@ interface LastManStandingGameState {
 }
 
 interface GuessThePlayerGameState {
-  order: string[]; // exactly 2 socketIds — 1v1 only this session, see guessThePlayerEngine.ts header
-  secrets: Map<string, string>; // socketId -> the OPPONENT-facing secret they picked for themselves
+  // FEATURE (Aziz's request): team-based, covering every mode from 1v1 up
+  // to 10v10 through ONE model — exactly two teams, each with N members
+  // (N=1 for 1v1). Each team shares a single hidden secret. For a team of
+  // size 1 the "propose" and "lock" steps collapse into the same
+  // immediate pick-and-lock behavior 1v1 always had — no extra step, no
+  // UI change for 1v1. For N>=2, the first player who joined that team
+  // (in the lobby) is the leader: only the leader can propose a candidate;
+  // every OTHER teammate must click "Agree" on the CURRENT proposal
+  // before it locks in as the team's real secret. Proposing a different
+  // candidate clears that team's prior agreements.
+  order: string[]; // every participating socketId, both teams combined
+  teamOf: Record<string, 1 | 2>; // snapshotted from RoomPlayer.team at game start
+  proposedSecret: { 1: string | null; 2: string | null };
+  agreedIds: Set<string>; // teammates (never the leader) who agreed to their team's CURRENT proposal
+  locked: { 1: boolean; 2: boolean };
+  secrets: { 1: string | null; 2: string | null }; // finalized once locked
   phase: "picking" | "playing" | "gameEnd";
-  winnerId: string | null;
-  forfeited: boolean; // true if the game ended by an opponent disconnecting rather than a correct guess
+  winnerTeam: 1 | 2 | null;
+  winnerId: string | null; // the specific player whose guess won it (null on a no-winner forfeit)
+  forfeited: boolean; // true if the game ended early because a whole team disconnected
 }
 
 interface FootballPyramidGameState {
@@ -247,6 +266,10 @@ interface Room {
   hostId: string;
   players: Map<string, RoomPlayer>;
   chat: ChatMessage[];
+  // Small private lobby chat per team, used by Guess The Player's team
+  // modes so the leader and teammates can agree on a pick without the
+  // opposing team seeing the discussion. Unused (stays empty) in 1v1/ffa.
+  teamChat: { 1: ChatMessage[]; 2: ChatMessage[] };
   started: boolean;
   createdAt: number;
   chain?: ChainGameState;
@@ -298,9 +321,14 @@ function broadcastRoomState(io: Server, room: Room) {
 }
 
 function capacityForMode(mode: RoomMode): number {
-  if (mode === "1v1") return 2;
-  if (mode === "2v2") return 4;
+  if (mode === "ffa") return MAX_PLAYERS;
+  const m = /^(\d+)v(\d+)$/.exec(mode);
+  if (m) return Number(m[1]) * 2;
   return MAX_PLAYERS;
+}
+
+function teamRoomName(code: string, team: 1 | 2): string {
+  return `${code}:team${team}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -845,28 +873,63 @@ function broadcastLastManStandingState(io: Server, room: Room) {
 }
 
 // ---------------------------------------------------------------------------
-// Guess The Player — game logic (PROJECT_SPEC.md §5 "Guess The Player")
+// Guess The Player — game logic (PROJECT_SPEC.md §5.1 "Guess The Player")
 //
-// 1v1 only this session (see guessThePlayerEngine.ts header for why). Both
-// players secretly pick a player during the "picking" phase via
-// `guessplayer:pick`; once both have picked, the phase flips to "playing"
-// and either player can submit a guess at any time via `guessplayer:guess`
-// — there's no turn order, this is a free-for-all 20-questions duel, with
-// the actual yes/no questions happening over the existing room chat
-// (`chat:message`), not a game-specific event. A guess that matches the
-// OPPONENT'S secret (case/accent-insensitive) wins immediately and reveals
-// both secrets to the room. Each player's own pick is only ever emitted
-// privately to their own socket (`guessplayer:yourSecret`) — never in the
-// room-wide broadcast — so "shown as a real <PlayerAvatar/> only to its
-// owner" actually holds server-side, not just in the UI.
+// Team-based across every supported mode, 1v1 through 10v10 (see
+// `GuessThePlayerGameState`'s own header comment for the full model). Once
+// both teams' secrets are locked in (instantly for 1v1, via the leader/
+// agree flow for 2v2+), the phase flips to "playing" and any player on
+// either team can submit a guess at any time via `guessplayer:guess` — no
+// turn order, a free-for-all duel between the two teams. The actual
+// yes/no questions happen over the existing room chat (`chat:message`),
+// not a game-specific event. A guess that matches the OPPOSING team's
+// secret (case/accent-insensitive) wins immediately for the whole team and
+// reveals both secrets to the room. Each team's own proposed/locked secret
+// is only ever emitted privately to that team's Socket.IO room
+// (`guessplayer:teamSecret`, sent to `teamRoomName(code, team)`) — never
+// the room-wide broadcast — so "shown as a real <PlayerAvatar/> only to its
+// owner('s team)" actually holds server-side, not just in the UI.
 // ---------------------------------------------------------------------------
+
+function guessThePlayerTeamMembers(room: Room, team: 1 | 2): string[] {
+  const g = room.guessThePlayer;
+  if (!g) return [];
+  return g.order.filter((id) => g.teamOf[id] === team);
+}
+
+// The leader is simply the first-joined (still-connected) member of that
+// team — computed on demand so a leader who disconnects is automatically
+// replaced by the next teammate, with no separate handoff step needed.
+function guessThePlayerLeader(room: Room, team: 1 | 2): string | null {
+  const members = guessThePlayerTeamMembers(room, team).filter((id) => room.players.has(id));
+  return members[0] ?? null;
+}
 
 function initGuessThePlayerGame(room: Room) {
   const order = Array.from(room.players.keys());
+  const teamOf: Record<string, 1 | 2> = {};
+
+  if (room.mode === "1v1") {
+    // 1v1 never goes through the lobby team-picker — the two joiners are
+    // simply each their own team of one.
+    order.forEach((id, i) => {
+      teamOf[id] = i === 0 ? 1 : 2;
+    });
+  } else {
+    for (const id of order) {
+      teamOf[id] = room.players.get(id)?.team ?? 1;
+    }
+  }
+
   room.guessThePlayer = {
     order,
-    secrets: new Map(),
+    teamOf,
+    proposedSecret: { 1: null, 2: null },
+    agreedIds: new Set(),
+    locked: { 1: false, 2: false },
+    secrets: { 1: null, 2: null },
     phase: "picking",
+    winnerTeam: null,
     winnerId: null,
     forfeited: false,
   };
@@ -877,12 +940,19 @@ function publicGuessThePlayerState(room: Room) {
   if (!g) return null;
   return {
     order: g.order,
-    pickedPlayerIds: Array.from(g.secrets.keys()),
+    teamOf: g.teamOf,
+    leaders: { 1: guessThePlayerLeader(room, 1), 2: guessThePlayerLeader(room, 2) },
+    // The proposal text itself is only ever sent privately to the owning
+    // team's socket.io room (see guessplayer:teamSecret) — never broadcast
+    // room-wide, so the opposing team can never see it mid-negotiation.
+    agreedIds: Array.from(g.agreedIds),
+    locked: g.locked,
     phase: g.phase,
+    winnerTeam: g.winnerTeam,
     winnerId: g.winnerId,
     forfeited: g.forfeited,
-    // Only revealed once the game is over — never mid-match.
-    secrets: g.phase === "gameEnd" ? Object.fromEntries(g.secrets) : null,
+    // Full reveal only once the game is over.
+    secrets: g.phase === "gameEnd" ? g.secrets : null,
   };
 }
 
@@ -890,17 +960,40 @@ function broadcastGuessThePlayerState(io: Server, room: Room) {
   io.to(room.code).emit("guessplayer:state", publicGuessThePlayerState(room));
 }
 
-function opponentIdInDuel(g: GuessThePlayerGameState, socketId: string): string | null {
-  return g.order.find((id) => id !== socketId) ?? null;
-}
-
-function endGuessThePlayerGame(io: Server, room: Room, winnerId: string | null, forfeited: boolean) {
+function endGuessThePlayerGame(
+  io: Server,
+  room: Room,
+  winnerTeam: 1 | 2 | null,
+  winnerId: string | null,
+  forfeited: boolean
+) {
   const g = room.guessThePlayer;
   if (!g || g.phase === "gameEnd") return;
   g.phase = "gameEnd";
+  g.winnerTeam = winnerTeam;
   g.winnerId = winnerId;
   g.forfeited = forfeited;
   broadcastGuessThePlayerState(io, room);
+}
+
+// Locks a team's secret in once every non-leader teammate has agreed to the
+// CURRENT proposal (a team of 1, e.g. 1v1, needs zero agreements — the
+// leader's own proposal is instantly final, exactly like the old 1v1 flow).
+// Flips the whole game to "playing" once BOTH teams are locked.
+function tryLockGuessThePlayerTeam(room: Room, team: 1 | 2) {
+  const g = room.guessThePlayer;
+  if (!g || g.locked[team] || !g.proposedSecret[team]) return;
+
+  const members = guessThePlayerTeamMembers(room, team).filter((id) => room.players.has(id));
+  const leader = members[0];
+  const required = Math.max(0, members.length - 1);
+  const agreedCount = members.filter((id) => id !== leader && g.agreedIds.has(id)).length;
+
+  if (agreedCount >= required) {
+    g.secrets[team] = g.proposedSecret[team];
+    g.locked[team] = true;
+    if (g.locked[1] && g.locked[2]) g.phase = "playing";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,9 +1341,7 @@ io.on("connection", (socket: Socket) => {
     "room:create",
     (payload: { displayName: string; mode: RoomMode }, ack?: (res: unknown) => void) => {
       const displayName = (payload?.displayName ?? "").trim().slice(0, 24) || "Player";
-      const mode: RoomMode = ["1v1", "2v2", "ffa"].includes(payload?.mode)
-        ? payload.mode
-        : "ffa";
+      const mode: RoomMode = VALID_ROOM_MODES.includes(payload?.mode) ? payload.mode : "ffa";
 
       const code = generateRoomCode();
       const room: Room = {
@@ -1262,6 +1353,7 @@ io.on("connection", (socket: Socket) => {
           [socket.id, { socketId: socket.id, displayName, ready: false, isHost: true, connected: true }],
         ]),
         chat: [],
+        teamChat: { 1: [], 2: [] },
         started: false,
         createdAt: Date.now(),
       };
@@ -1322,8 +1414,53 @@ io.on("connection", (socket: Socket) => {
   socket.on("room:changeMode", (payload: { mode: RoomMode }) => {
     const room = roomForSocket(socket.id);
     if (!room || room.hostId !== socket.id || room.started) return;
-    if (!["1v1", "2v2", "ffa"].includes(payload?.mode)) return;
+    if (!VALID_ROOM_MODES.includes(payload?.mode)) return;
     room.mode = payload.mode;
+    // Changing modes invalidates any prior team assignments (a switch from
+    // 5v5 to 2v2, say, could leave stale teams that no longer make sense,
+    // and a switch away from a team mode entirely should clear them too).
+    for (const p of room.players.values()) {
+      p.team = undefined;
+      const s = io.sockets.sockets.get(p.socketId);
+      s?.leave(teamRoomName(room.code, 1));
+      s?.leave(teamRoomName(room.code, 2));
+    }
+    room.teamChat = { 1: [], 2: [] };
+    broadcastRoomState(io, room);
+  });
+
+  // Self-select (or, if you're the host, assign someone else) onto Team 1
+  // or Team 2 ahead of a team-mode match. Shared infrastructure — not
+  // specific to Guess The Player, so any future team-based game can reuse
+  // it. A no-op outside team modes (1v1 doesn't need it, ffa has no teams).
+  socket.on("room:assignTeam", (payload: { team: 1 | 2; playerId?: string }) => {
+    const room = roomForSocket(socket.id);
+    if (!room || room.started) return;
+    if (!TEAM_MODES.includes(room.mode)) return;
+    if (payload?.team !== 1 && payload?.team !== 2) return;
+
+    const targetId = payload?.playerId && room.hostId === socket.id ? payload.playerId : socket.id;
+    const target = room.players.get(targetId);
+    if (!target) return;
+
+    // A team can hold at most half the mode's capacity (e.g. 5 each in 5v5).
+    const perTeamCap = capacityForMode(room.mode) / 2;
+    const currentOnTeam = Array.from(room.players.values()).filter(
+      (p) => p.team === payload.team && p.socketId !== targetId
+    ).length;
+    if (currentOnTeam >= perTeamCap) return;
+
+    target.team = payload.team;
+
+    // Guess The Player's `guessplayer:pick`/team-chat broadcasts target the
+    // Socket.IO room `teamRoomName(code, team)` directly, so the socket
+    // actually needs to be a member of it (and only it) for that to reach
+    // the right people and nobody else.
+    const targetSocket = io.sockets.sockets.get(targetId);
+    targetSocket?.leave(teamRoomName(room.code, 1));
+    targetSocket?.leave(teamRoomName(room.code, 2));
+    targetSocket?.join(teamRoomName(room.code, payload.team));
+
     broadcastRoomState(io, room);
   });
 
@@ -1357,9 +1494,26 @@ io.on("connection", (socket: Socket) => {
       ack?.({ ok: false, error: "Pick a game first." });
       return;
     }
-    if (room.gameId === "guess-the-player" && room.mode !== "1v1") {
-      ack?.({ ok: false, error: "Guess The Player currently only supports 1v1 mode." });
+    if (room.gameId === "guess-the-player" && !TEAM_MODES.includes(room.mode)) {
+      ack?.({ ok: false, error: "Guess The Player needs a team mode (1v1 through 10v10)." });
       return;
+    }
+    if (room.gameId === "guess-the-player" && room.mode !== "1v1") {
+      // 2v2+ requires every player to have picked a side, and both sides
+      // to be non-empty, before a leader/teammate pick negotiation can
+      // possibly make sense.
+      const players = Array.from(room.players.values());
+      const unassigned = players.filter((p) => p.team !== 1 && p.team !== 2);
+      if (unassigned.length > 0) {
+        ack?.({ ok: false, error: "Everyone needs to join Team 1 or Team 2 first." });
+        return;
+      }
+      const team1Count = players.filter((p) => p.team === 1).length;
+      const team2Count = players.filter((p) => p.team === 2).length;
+      if (team1Count === 0 || team2Count === 0) {
+        ack?.({ ok: false, error: "Both teams need at least one player." });
+        return;
+      }
     }
     const everyoneReady = Array.from(room.players.values())
       .filter((p) => !p.isHost)
@@ -1447,6 +1601,39 @@ io.on("connection", (socket: Socket) => {
     if (room.chat.length > MAX_CHAT_HISTORY) room.chat.shift();
 
     io.to(room.code).emit("chat:message", message);
+  });
+
+  // Private per-team lobby chat, used ahead of Guess The Player's 2v2+
+  // matches so a team can talk through who to pick without the opposing
+  // team ever seeing it. Delivered only to `teamRoomName(code, team)` —
+  // never the room-wide `chat:message` channel.
+  socket.on("teamchat:sync", (ack?: (res: unknown) => void) => {
+    const room = roomForSocket(socket.id);
+    const player = room?.players.get(socket.id);
+    const team = player?.team;
+    ack?.(room && team ? room.teamChat[team] : []);
+  });
+
+  socket.on("teamchat:message", (payload: { text: string }) => {
+    const room = roomForSocket(socket.id);
+    const player = room?.players.get(socket.id);
+    if (!room || !player || !player.team) return;
+    if (!TEAM_MODES.includes(room.mode)) return;
+
+    const text = (payload?.text ?? "").trim().slice(0, 280);
+    if (!text) return;
+
+    const message: ChatMessage = {
+      id: `${socket.id}-${Date.now()}`,
+      from: player.displayName,
+      text,
+      ts: Date.now(),
+    };
+    const team = player.team;
+    room.teamChat[team].push(message);
+    if (room.teamChat[team].length > MAX_CHAT_HISTORY) room.teamChat[team].shift();
+
+    io.to(teamRoomName(room.code, team)).emit("teamchat:message", message);
   });
 
   // --- The Chain ---------------------------------------------------------
@@ -1609,27 +1796,56 @@ io.on("connection", (socket: Socket) => {
   socket.on("guessplayer:sync", (ack?: (res: unknown) => void) => {
     const room = roomForSocket(socket.id);
     ack?.(room?.guessThePlayer ? publicGuessThePlayerState(room) : null);
-    // Re-send the caller's own secret too, in case they reconnected mid-match
-    // (private state that a room-wide broadcast never carries).
-    const mine = room?.guessThePlayer?.secrets.get(socket.id);
-    if (mine) io.to(socket.id).emit("guessplayer:yourSecret", { name: mine });
+    // Re-send the caller's team's current proposal too, in case they
+    // reconnected mid-match (private state a room-wide broadcast never
+    // carries, so a fresh `room:state` alone wouldn't restore it).
+    const g = room?.guessThePlayer;
+    const myTeam = g?.teamOf[socket.id];
+    if (g && myTeam) {
+      io.to(socket.id).emit("guessplayer:teamSecret", { name: g.proposedSecret[myTeam] });
+    }
   });
 
+  // Propose a candidate for MY team. Only the team leader may call this —
+  // for a team of 1 (1v1) that's instant and final, exactly like the old
+  // 1v1 flow; for N>=2 it's a proposal teammates must agree to.
   socket.on("guessplayer:pick", (payload: { name: string }) => {
     const room = roomForSocket(socket.id);
     const g = room?.guessThePlayer;
     if (!room || !g || g.phase !== "picking") return;
-    if (g.secrets.has(socket.id)) return; // already locked in, no changing your mind
+
+    const myTeam = g.teamOf[socket.id];
+    if (!myTeam || g.locked[myTeam]) return;
+    if (guessThePlayerLeader(room, myTeam) !== socket.id) return;
 
     const raw = (payload?.name ?? "").trim();
     if (!isValidPick(raw)) return;
 
-    g.secrets.set(socket.id, raw);
-    io.to(socket.id).emit("guessplayer:yourSecret", { name: raw });
-
-    if (g.secrets.size >= g.order.length) {
-      g.phase = "playing";
+    g.proposedSecret[myTeam] = raw;
+    // A fresh proposal invalidates any agreements teammates gave the old one.
+    for (const id of Array.from(g.agreedIds)) {
+      if (g.teamOf[id] === myTeam) g.agreedIds.delete(id);
     }
+
+    io.to(teamRoomName(room.code, myTeam)).emit("guessplayer:teamSecret", { name: raw });
+
+    tryLockGuessThePlayerTeam(room, myTeam);
+    broadcastGuessThePlayerState(io, room);
+  });
+
+  // A non-leader teammate agreeing to their team's CURRENT proposal.
+  socket.on("guessplayer:agree", () => {
+    const room = roomForSocket(socket.id);
+    const g = room?.guessThePlayer;
+    if (!room || !g || g.phase !== "picking") return;
+
+    const myTeam = g.teamOf[socket.id];
+    if (!myTeam || g.locked[myTeam]) return;
+    if (guessThePlayerLeader(room, myTeam) === socket.id) return; // leader auto-agrees by proposing
+    if (!g.proposedSecret[myTeam]) return; // nothing proposed yet
+
+    g.agreedIds.add(socket.id);
+    tryLockGuessThePlayerTeam(room, myTeam);
     broadcastGuessThePlayerState(io, room);
   });
 
@@ -1638,11 +1854,14 @@ io.on("connection", (socket: Socket) => {
     const g = room?.guessThePlayer;
     if (!room || !g || g.phase !== "playing") return;
 
+    const myTeam = g.teamOf[socket.id];
+    if (!myTeam) return;
+    const opponentTeam: 1 | 2 = myTeam === 1 ? 2 : 1;
+    const opponentSecret = g.secrets[opponentTeam];
+    if (!opponentSecret) return;
+
     const raw = (payload?.name ?? "").trim();
     if (!raw) return;
-
-    const opponentId = opponentIdInDuel(g, socket.id);
-    const opponentSecret = opponentId ? g.secrets.get(opponentId) : undefined;
 
     io.to(room.code).emit("guessplayer:guessMade", {
       playerId: socket.id,
@@ -1650,8 +1869,8 @@ io.on("connection", (socket: Socket) => {
       guess: raw,
     });
 
-    if (opponentSecret && namesMatch(raw, opponentSecret)) {
-      endGuessThePlayerGame(io, room, socket.id, false);
+    if (namesMatch(raw, opponentSecret)) {
+      endGuessThePlayerGame(io, room, myTeam, socket.id, false);
     }
   });
 
@@ -1752,6 +1971,8 @@ function handleLeave(socket: Socket) {
   room.players.delete(socket.id);
   socketRoom.delete(socket.id);
   socket.leave(room.code);
+  socket.leave(teamRoomName(room.code, 1));
+  socket.leave(teamRoomName(room.code, 2));
 
   if (room.players.size === 0) {
     if (room.chain?.timer) clearTimeout(room.chain.timer);
@@ -1794,12 +2015,32 @@ function handleLeave(socket: Socket) {
     }
   }
 
-  // Mid-match disconnect during Guess The Player: 1v1 only, so the other
-  // player leaving ends the duel outright — declare the remaining player
-  // the winner by forfeit rather than leaving the game stuck forever.
+  // Mid-match disconnect during Guess The Player. 1v1: the other player
+  // leaving ends the duel outright by forfeit, exactly as before. Team
+  // modes (2v2+): only forfeit if a WHOLE team is now empty of connected
+  // players — a single teammate leaving a bigger team shouldn't end the
+  // match for the rest of their side. If a team goes empty mid-"picking"
+  // (before a secret ever locked in), there's no opponent to forfeit
+  // to/from in any meaningful sense either, so just end with no winner.
   if (room.guessThePlayer && room.guessThePlayer.phase !== "gameEnd") {
-    const remaining = room.guessThePlayer.order.find((id) => id !== socket.id && room.players.has(id));
-    endGuessThePlayerGame(io, room, remaining ?? null, true);
+    const g = room.guessThePlayer;
+    const team1Left = guessThePlayerTeamMembers(room, 1).some((id) => room.players.has(id));
+    const team2Left = guessThePlayerTeamMembers(room, 2).some((id) => room.players.has(id));
+    if (!team1Left && !team2Left) {
+      endGuessThePlayerGame(io, room, null, null, true);
+    } else if (!team1Left) {
+      endGuessThePlayerGame(io, room, 2, guessThePlayerLeader(room, 2), true);
+    } else if (!team2Left) {
+      endGuessThePlayerGame(io, room, 1, guessThePlayerLeader(room, 1), true);
+    } else if (g.phase === "picking") {
+      // Both teams still have players — the leader who just left may have
+      // been mid-proposal; re-run the lock check in case the departure
+      // changes who's required to agree (e.g. the required-agreement count
+      // just dropped because the team is smaller now).
+      tryLockGuessThePlayerTeam(room, 1);
+      tryLockGuessThePlayerTeam(room, 2);
+      broadcastGuessThePlayerState(io, room);
+    }
   }
 
   // Host left — hand off to whoever's been in the room longest.

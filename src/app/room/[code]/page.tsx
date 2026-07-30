@@ -14,17 +14,30 @@ import {
   Swords,
   Users2,
   Grid3x3,
+  ShieldCheck,
 } from "lucide-react";
-import { useRoomStore, type RoomMode } from "@/lib/store/room";
+import { useRoomStore, TEAM_MODES, type RoomMode } from "@/lib/store/room";
 import { GAMES, gameById } from "@/lib/games";
 
 const DISPLAY_NAME_KEY = "fm:displayName";
 
+// Every team size Guess The Player supports, 1v1 through 5v5, plus FFA
+// for every other game (PROJECT_SPEC.md §4). 2v2+ all reuse the same
+// "Users2" icon — the team-size number in the label does the rest.
 const MODES: { id: RoomMode; label: string; icon: React.ReactNode }[] = [
   { id: "1v1", label: "1v1", icon: <Swords size={16} /> },
   { id: "2v2", label: "2v2", icon: <Users2 size={16} /> },
+  { id: "3v3", label: "3v3", icon: <Users2 size={16} /> },
+  { id: "4v4", label: "4v4", icon: <Users2 size={16} /> },
+  { id: "5v5", label: "5v5", icon: <Users2 size={16} /> },
   { id: "ffa", label: "FFA", icon: <Grid3x3 size={16} /> },
 ];
+
+function capacityForMode(mode: RoomMode): number {
+  if (mode === "ffa") return 50;
+  const m = /^(\d+)v(\d+)$/.exec(mode);
+  return m ? Number(m[1]) * 2 : 50;
+}
 
 export default function RoomLobbyPage() {
   const params = useParams<{ code: string }>();
@@ -39,6 +52,7 @@ export default function RoomLobbyPage() {
     leaveRoom,
     setReady,
     changeMode,
+    assignTeam,
     changeGame,
     kick,
     startGame,
@@ -105,10 +119,21 @@ export default function RoomLobbyPage() {
 
   const self = room.players.find((p) => p.socketId === selfId);
   const isHost = self?.isHost ?? false;
-  const capacity = room.mode === "1v1" ? 2 : room.mode === "2v2" ? 4 : 50;
+  const capacity = capacityForMode(room.mode);
   const nonHostPlayers = room.players.filter((p) => !p.isHost);
   const everyoneReady = nonHostPlayers.length > 0 && nonHostPlayers.every((p) => p.ready);
   const currentGame = gameById(room.gameId ?? undefined);
+  // Team picking only matters once a side genuinely has more than one
+  // player — 1v1 assigns the two joiners to a side of one automatically
+  // server-side, no lobby step needed (PROJECT_SPEC.md §5.1).
+  const showTeamPicker = TEAM_MODES.includes(room.mode) && room.mode !== "1v1";
+  const perTeamCap = capacity / 2;
+  const team1 = room.players.filter((p) => p.team === 1);
+  const team2 = room.players.filter((p) => p.team === 2);
+  const unassigned = room.players.filter((p) => p.team !== 1 && p.team !== 2);
+  // Leader = first-joined member of the team, same rule the server uses.
+  const leader1Id = team1[0]?.socketId ?? null;
+  const leader2Id = team2[0]?.socketId ?? null;
 
   function copyCode() {
     navigator.clipboard?.writeText(room!.code);
@@ -177,7 +202,7 @@ export default function RoomLobbyPage() {
           <div className="glass rounded-3xl p-5 flex flex-col gap-4">
             <div>
               <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">Mode</p>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
                 {MODES.map((m) => (
                   <button
                     key={m.id}
@@ -225,6 +250,109 @@ export default function RoomLobbyPage() {
               )}
             </div>
           </div>
+
+          {/* Teams — only for 2v2+ (1v1 auto-assigns, ffa has no teams) */}
+          {showTeamPicker && (
+            <div className="glass rounded-3xl p-5">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                  Teams — {room.mode}
+                </p>
+                <p className="text-xs text-gray-500">Max {perTeamCap} per side</p>
+              </div>
+              {unassigned.length > 0 && (
+                <p className="text-xs text-[var(--color-accent)] bg-[var(--color-accent)]/10 rounded-lg px-3 py-2 mb-3">
+                  Everyone needs to join a team before the host can start.
+                </p>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {([1, 2] as const).map((team) => {
+                  const members = team === 1 ? team1 : team2;
+                  const leaderId = team === 1 ? leader1Id : leader2Id;
+                  const full = members.length >= perTeamCap;
+                  const onThisTeam = self?.team === team;
+                  return (
+                    <div
+                      key={team}
+                      className={`rounded-2xl p-3 border ${
+                        team === 1
+                          ? "border-[var(--color-primary)]/30 bg-[var(--color-primary)]/5"
+                          : "border-[var(--color-accent)]/30 bg-[var(--color-accent)]/5"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-bold">
+                          Team {team} ({members.length}/{perTeamCap})
+                        </span>
+                        <button
+                          onClick={() => assignTeam(team)}
+                          disabled={onThisTeam || (full && !onThisTeam)}
+                          className={`text-xs font-bold px-3 py-1.5 rounded-full transition-colors ${
+                            onThisTeam
+                              ? "bg-white/10 text-gray-500 cursor-default"
+                              : full
+                              ? "bg-white/5 text-gray-600 cursor-not-allowed"
+                              : "bg-white/10 text-white hover:bg-white/20"
+                          }`}
+                        >
+                          {onThisTeam ? "Joined" : full ? "Full" : "Join"}
+                        </button>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        {members.length === 0 && (
+                          <p className="text-xs text-gray-500 italic px-1">No one yet</p>
+                        )}
+                        {members.map((p) => (
+                          <div
+                            key={p.socketId}
+                            className="flex items-center gap-1.5 text-sm bg-white/5 rounded-lg px-2.5 py-1.5"
+                          >
+                            {p.socketId === leaderId && (
+                              <ShieldCheck size={13} className="text-[var(--color-primary)] shrink-0" />
+                            )}
+                            <span className="truncate">{p.displayName}</span>
+                            {p.socketId === selfId && <span className="text-gray-500 text-xs">(you)</span>}
+                            {p.socketId === leaderId && (
+                              <span className="text-[10px] text-gray-400 ml-auto shrink-0">leader</span>
+                            )}
+                            {isHost && (
+                              <button
+                                onClick={() => assignTeam(team === 1 ? 2 : 1, p.socketId)}
+                                className="ml-auto text-[10px] text-gray-500 hover:text-white shrink-0 font-semibold"
+                              >
+                                move → Team {team === 1 ? 2 : 1}
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {isHost && unassigned.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {unassigned.map((p) => (
+                    <div key={p.socketId} className="flex items-center gap-1.5 bg-white/5 rounded-lg px-2.5 py-1.5 text-xs">
+                      <span>{p.displayName}</span>
+                      <button
+                        onClick={() => assignTeam(1, p.socketId)}
+                        className="text-[var(--color-primary)] font-bold hover:underline"
+                      >
+                        → Team 1
+                      </button>
+                      <button
+                        onClick={() => assignTeam(2, p.socketId)}
+                        className="text-[var(--color-accent)] font-bold hover:underline"
+                      >
+                        → Team 2
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Players */}
           <div className="glass rounded-3xl p-5">

@@ -3,7 +3,24 @@
 import { create } from "zustand";
 import { getSocket } from "@/lib/socket";
 
-export type RoomMode = "1v1" | "2v2" | "ffa";
+// Guess The Player supports every team size 1v1..10v10 (PROJECT_SPEC.md
+// §4/§5.1); every other game still only ever uses 1v1/2v2/ffa, but the
+// room itself doesn't restrict mode by game, so the type covers all of them.
+export type RoomMode =
+  | "1v1"
+  | "2v2"
+  | "3v3"
+  | "4v4"
+  | "5v5"
+  | "ffa";
+// Every mode with two real sides — used to gate team-assignment UI on/off.
+export const TEAM_MODES: RoomMode[] = [
+  "1v1",
+  "2v2",
+  "3v3",
+  "4v4",
+  "5v5",
+];
 
 export interface RoomPlayer {
   socketId: string;
@@ -43,6 +60,9 @@ interface RoomStore {
   leaveRoom: () => void;
   setReady: (ready: boolean) => void;
   changeMode: (mode: RoomMode) => void;
+  // Self-select onto Team 1/2 ahead of a team-mode match (host may pass a
+  // playerId to assign someone else instead).
+  assignTeam: (team: 1 | 2, playerId?: string) => void;
   changeGame: (gameId: string) => void;
   kick: (playerId: string) => void;
   startGame: () => Promise<string | null>;
@@ -57,10 +77,20 @@ export const useRoomStore = create<RoomStore>((set, get) => {
     socket.off("room:state");
     socket.off("room:kicked");
     socket.off("connect");
+    socket.off("chat:message");
 
     socket.on("connect", () => set({ selfId: socket.id ?? null }));
     socket.on("room:state", (state: RoomState) => set({ room: state, connecting: false }));
     socket.on("room:kicked", () => set({ room: null, error: "You were removed from the room." }));
+    // BUG FIX (live-problems.md): the server broadcasts `chat:message` as its
+    // own event, separate from `room:state`. This listener was missing
+    // entirely, so a new message never rendered live for either player —
+    // it only ever showed up if some *other* unrelated `room:state`
+    // broadcast happened to be re-sent afterward and its chat array
+    // snapshot happened to include it by then. Append live instead.
+    socket.on("chat:message", (message: ChatMessage) =>
+      set((s) => (s.room ? { room: { ...s.room, chat: [...s.room.chat, message] } } : s))
+    );
   }
 
   return {
@@ -121,6 +151,7 @@ export const useRoomStore = create<RoomStore>((set, get) => {
 
     setReady: (ready) => getSocket().emit("room:ready", { ready }),
     changeMode: (mode) => getSocket().emit("room:changeMode", { mode }),
+    assignTeam: (team, playerId) => getSocket().emit("room:assignTeam", { team, playerId }),
     changeGame: (gameId) => getSocket().emit("room:changeGame", { gameId }),
     kick: (playerId) => getSocket().emit("room:kick", { playerId }),
 

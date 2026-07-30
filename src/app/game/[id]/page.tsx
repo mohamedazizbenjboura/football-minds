@@ -15,7 +15,20 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Clock, Flame, Trophy, Skull, Send, Construction, HelpCircle, Sparkles } from "lucide-react";
+import {
+  ArrowLeft,
+  Clock,
+  Flame,
+  Trophy,
+  Skull,
+  Send,
+  Construction,
+  HelpCircle,
+  Sparkles,
+  ShieldCheck,
+  Check,
+  Users2,
+} from "lucide-react";
 import { useRoomStore } from "@/lib/store/room";
 import { useChainStore, type ChainPosition } from "@/lib/store/chain";
 import { useWhoAmIStore } from "@/lib/store/whoami";
@@ -1054,19 +1067,36 @@ function LastManStandingGame() {
 }
 
 // ---------------------------------------------------------------------------
-// Guess The Player — fully playable, 1v1 only (see server/guessThePlayerEngine.ts)
+// Guess The Player — fully playable, every team size 1v1..10v10
+// (PROJECT_SPEC.md §5.1). Two teams face off; a team of size >1 negotiates
+// its hidden pick through a private team lobby (leader proposes via search,
+// every other teammate taps "Agree") before the match can start.
 // ---------------------------------------------------------------------------
 
 function GuessThePlayerGame() {
   const router = useRouter();
   const { room, selfId, sendChat, backToLobby } = useRoomStore();
-  const { state, mySecret, lastGuesses, attach, sync, pick, guess } = useGuessThePlayerStore();
+  const {
+    state,
+    myTeamProposal,
+    lastGuesses,
+    teamChat,
+    attach,
+    sync,
+    syncTeamChat,
+    pick,
+    agree,
+    guess,
+    sendTeamChat,
+  } = useGuessThePlayerStore();
   const [chatText, setChatText] = useState("");
   const [guessText, setGuessText] = useState("");
+  const [teamChatText, setTeamChatText] = useState("");
 
   useEffect(() => {
     attach();
     sync();
+    syncTeamChat();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1080,6 +1110,14 @@ function GuessThePlayerGame() {
     if (!text) return;
     sendChat(text);
     setChatText("");
+  }
+
+  function handleTeamChatSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const text = teamChatText.trim();
+    if (!text) return;
+    sendTeamChat(text);
+    setTeamChatText("");
   }
 
   function handleGuessSubmit(e: React.FormEvent) {
@@ -1112,12 +1150,28 @@ function GuessThePlayerGame() {
     );
   }
 
-  const opponentId = state.order.find((id) => id !== selfId) ?? null;
-  const iHavePicked = selfId ? state.pickedPlayerIds.includes(selfId) : false;
-  const opponentHasPicked = opponentId ? state.pickedPlayerIds.includes(opponentId) : false;
+  const myTeam = selfId ? state.teamOf[selfId] : undefined;
+  const opponentTeam: 1 | 2 | undefined = myTeam ? (myTeam === 1 ? 2 : 1) : undefined;
+  const teammates = myTeam ? room.players.filter((p) => state.teamOf[p.socketId] === myTeam) : [];
+  const isSolo = teammates.length <= 1; // 1v1: no leader/agree step needed at all
+  const isLeader = myTeam ? state.leaders[myTeam] === selfId : false;
+  const myTeamLocked = myTeam ? state.locked[myTeam] : false;
+  const opponentTeamLocked = opponentTeam ? state.locked[opponentTeam] : false;
+  const nonLeaderTeammates = teammates.filter((p) => p.socketId !== state.leaders[myTeam ?? 1]);
+  const agreedCount = nonLeaderTeammates.filter((p) => state.agreedIds.includes(p.socketId)).length;
+  const iHaveAgreed = selfId ? state.agreedIds.includes(selfId) : false;
+
+  function teamLabel(team: 1 | 2) {
+    const members = room!.players.filter((p) => state!.teamOf[p.socketId] === team);
+    if (members.length <= 1) return members[0]?.displayName ?? `Team ${team}`;
+    return `Team ${team} (${members.map((m) => m.displayName).join(", ")})`;
+  }
 
   if (state.phase === "gameEnd") {
-    const iWon = state.winnerId === selfId;
+    const iWon = myTeam !== undefined && state.winnerTeam === myTeam;
+    const winners = state.winnerTeam
+      ? room.players.filter((p) => state.teamOf[p.socketId] === state.winnerTeam)
+      : [];
     return (
       <main className="min-h-screen flex flex-col items-center justify-center gap-6 px-4 text-center">
         <motion.div
@@ -1127,20 +1181,27 @@ function GuessThePlayerGame() {
         >
           <Trophy size={48} className="text-[var(--color-accent)]" />
           <h1 className="text-3xl font-bold">
-            {state.winnerId ? `${nameOf(state.winnerId)} wins!` : "No winner"}
+            {state.winnerTeam
+              ? winners.length > 1
+                ? `Team ${state.winnerTeam} wins!`
+                : `${nameOf(state.winnerId)} wins!`
+              : "No winner"}
           </h1>
+          {winners.length > 1 && (
+            <p className="text-sm text-gray-400 -mt-2">{winners.map((w) => w.displayName).join(", ")}</p>
+          )}
           <p className="text-gray-400">
             {state.forfeited
-              ? `${iWon ? "Your opponent" : nameOf(state.winnerId)} left the match — won by forfeit.`
-              : "Guessed the opponent's secret pick correctly."}
+              ? `${iWon ? "The other team" : "Your team"} left the match — won by forfeit.`
+              : `${nameOf(state.winnerId)} guessed the opposing team's secret pick correctly.`}
           </p>
           {state.secrets && (
             <div className="flex items-center gap-6 mt-2">
-              {state.order.map((id) => (
-                <div key={id} className="flex flex-col items-center gap-2">
-                  <PlayerAvatar name={state.secrets![id]} size={64} ring={id === state.winnerId} />
-                  <span className="text-xs text-gray-400 max-w-[7rem] truncate">{nameOf(id)}&apos;s pick</span>
-                  <span className="text-sm font-semibold">{state.secrets![id]}</span>
+              {([1, 2] as const).map((team) => (
+                <div key={team} className="flex flex-col items-center gap-2">
+                  {state.secrets![team] && <PlayerAvatar name={state.secrets![team]!} size={64} ring={team === state.winnerTeam} />}
+                  <span className="text-xs text-gray-400 max-w-[9rem] truncate">{teamLabel(team)}&apos;s pick</span>
+                  <span className="text-sm font-semibold">{state.secrets![team]}</span>
                 </div>
               ))}
             </div>
@@ -1170,23 +1231,134 @@ function GuessThePlayerGame() {
 
         <div className="glass rounded-3xl p-6 flex flex-col items-center gap-3 text-center">
           <HelpCircle size={28} className="text-[var(--color-primary)]" />
-          <h1 className="text-xl font-bold">Secretly pick your player</h1>
+          <h1 className="text-xl font-bold">
+            {isSolo ? "Secretly pick your player" : "Agree on your team's hidden player"}
+          </h1>
           <p className="text-sm text-gray-400">
-            Your opponent will try to guess who it is by asking yes/no questions in chat.
-            Only you can see who you picked.
+            {isSolo
+              ? "The opposing side will try to guess who it is by asking yes/no questions in chat. Only you can see who you picked."
+              : "Your leader proposes a player here — everyone else taps Agree once they're happy with the pick. Talk it over in your private team chat below."}
           </p>
         </div>
 
-        {iHavePicked ? (
+        {/* Opponent status, no details — just whether they're ready */}
+        <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
+          <Users2 size={14} />
+          {opponentTeamLocked ? "Opponent has locked in their pick." : "Opponent is still deciding…"}
+        </div>
+
+        {myTeamLocked ? (
           <div className="glass rounded-3xl p-6 flex flex-col items-center gap-3 text-center">
-            {mySecret && <PlayerAvatar name={mySecret} size={72} ring />}
-            <p className="font-bold">{mySecret}</p>
+            {myTeamProposal && <PlayerAvatar name={myTeamProposal} size={72} ring />}
+            <p className="font-bold">{myTeamProposal}</p>
             <p className="text-sm text-gray-400">
-              {opponentHasPicked ? "Starting…" : `Waiting for ${nameOf(opponentId)} to pick…`}
+              {opponentTeamLocked ? "Starting…" : "Locked in — waiting for the other team…"}
             </p>
           </div>
-        ) : (
+        ) : isSolo ? (
           <PlayerSearchPicker onPick={(name) => pick(name)} placeholder="Search for a player to hide…" />
+        ) : isLeader ? (
+          <div className="flex flex-col gap-4">
+            <PlayerSearchPicker onPick={(name) => pick(name)} placeholder="Propose a player to hide…" />
+            {myTeamProposal && (
+              <div className="glass rounded-2xl p-4 flex items-center gap-4">
+                <PlayerAvatar name={myTeamProposal} size={48} />
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold truncate">{myTeamProposal}</p>
+                  <p className="text-xs text-gray-400">
+                    {agreedCount}/{nonLeaderTeammates.length} teammates agreed
+                  </p>
+                </div>
+                <ShieldCheck size={20} className="text-[var(--color-primary)] shrink-0" />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="glass rounded-3xl p-6 flex flex-col items-center gap-3 text-center">
+            {myTeamProposal ? (
+              <>
+                <PlayerAvatar name={myTeamProposal} size={72} />
+                <p className="font-bold">{myTeamProposal}</p>
+                <p className="text-sm text-gray-400">Your leader proposed this player.</p>
+                <button
+                  onClick={() => agree()}
+                  disabled={iHaveAgreed}
+                  className={`mt-2 h-12 px-6 rounded-xl font-bold flex items-center gap-2 transition-colors ${
+                    iHaveAgreed
+                      ? "bg-white/10 text-gray-400 cursor-default"
+                      : "bg-[var(--color-primary)] text-black hover:bg-[var(--color-primary-dark)]"
+                  }`}
+                >
+                  <Check size={18} /> {iHaveAgreed ? "Agreed" : "Agree"}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="font-semibold">Waiting for {nameOf(state.leaders[myTeam ?? 1])} to propose a player…</p>
+                <p className="text-sm text-gray-400">They&apos;re the team leader for this match.</p>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Teammates + who's agreed */}
+        {!isSolo && (
+          <div className="flex flex-wrap gap-2">
+            {teammates.map((p) => {
+              const isLead = state.leaders[myTeam ?? 1] === p.socketId;
+              const hasAgreed = state.agreedIds.includes(p.socketId);
+              return (
+                <span
+                  key={p.socketId}
+                  className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full ${
+                    isLead || hasAgreed
+                      ? "bg-[var(--color-primary)]/15 text-[var(--color-primary)]"
+                      : "bg-white/5 text-gray-300"
+                  }`}
+                >
+                  {isLead && <ShieldCheck size={12} />}
+                  {!isLead && hasAgreed && <Check size={12} />}
+                  {p.displayName}
+                  {p.socketId === selfId ? " (you)" : ""}
+                  {isLead ? " · leader" : ""}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Private team lobby chat — invisible to the opposing team */}
+        {!isSolo && (
+          <div className="glass rounded-2xl p-4 flex flex-col gap-2">
+            <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Team chat (private)</p>
+            <div className="flex-1 overflow-y-auto flex flex-col gap-1.5 max-h-48">
+              {teamChat.length === 0 && (
+                <p className="text-xs text-gray-500 italic">Talk it over with your team…</p>
+              )}
+              {teamChat.map((m) => (
+                <div key={m.id} className="text-sm">
+                  <span className="font-semibold text-[var(--color-primary)]">{m.from}:</span>{" "}
+                  <span className="text-gray-300">{m.text}</span>
+                </div>
+              ))}
+            </div>
+            <form onSubmit={handleTeamChatSubmit} className="flex gap-2 pt-1">
+              <input
+                value={teamChatText}
+                onChange={(e) => setTeamChatText(e.target.value)}
+                placeholder="Suggest a player to your team…"
+                className="flex-1 h-11 px-3 rounded-xl bg-white/5 border border-white/10 focus:border-[var(--color-primary)] outline-none text-sm"
+              />
+              <button
+                type="submit"
+                disabled={!teamChatText.trim()}
+                className="w-11 h-11 rounded-xl bg-white/10 text-white flex items-center justify-center shrink-0 disabled:opacity-40 hover:bg-white/20 transition-colors"
+                aria-label="Send"
+              >
+                <Send size={18} />
+              </button>
+            </form>
+          </div>
         )}
       </main>
     );
@@ -1202,13 +1374,17 @@ function GuessThePlayerGame() {
         >
           <ArrowLeft size={16} /> Lobby
         </button>
-        <span className="text-sm font-bold text-gray-300">vs {nameOf(opponentId)}</span>
+        <span className="text-sm font-bold text-gray-300 truncate max-w-[60%]">
+          vs {opponentTeam ? teamLabel(opponentTeam) : "—"}
+        </span>
       </div>
 
       <div className="glass rounded-2xl p-4 flex items-center gap-4">
-        <span className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Your pick</span>
-        {mySecret && <PlayerAvatar name={mySecret} size={44} />}
-        <span className="font-semibold text-sm truncate">{mySecret}</span>
+        <span className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">
+          Your team&apos;s pick
+        </span>
+        {myTeamProposal && <PlayerAvatar name={myTeamProposal} size={44} />}
+        <span className="font-semibold text-sm truncate">{myTeamProposal}</span>
       </div>
 
       {/* Yes/no questions — the existing room chat, per spec */}

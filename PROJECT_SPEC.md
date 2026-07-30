@@ -56,11 +56,12 @@ Click, correct, wrong, victory, crowd cheer stingers. Mute toggle persisted clie
 
 ## 4. Room System
 
-- Modes: 1v1, 2v2, Free-For-All (up to 50 players)
+- Modes: 1v1, 2v2, Free-For-All (up to 50 players) for most games. **Guess The Player** additionally supports every team size from 1v1 up to 5v5 (1v1, 2v2, 3v3, 4v4, 5v5) — see §5.1 for exactly how team picking works in those modes.
 - Private rooms with a shareable invite code (short, human-typeable, e.g. `MBAPPE7X`)
 - Room chat + emoji reactions
 - Ready-up flow before host can start
 - Host controls: start game, kick player, change mode/game
+- Players self-assign to Team 1 or Team 2 in the lobby before a team-mode match starts (host can also do this on their behalf); the first player to join a team is that team's leader for any game with team-leader mechanics
 - All of the above is Socket.io room state — nothing here touches Postgres
 
 ---
@@ -70,7 +71,11 @@ Click, correct, wrong, victory, crowd cheer stingers. Mute toggle persisted clie
 All games below are unchanged in *design* from the original spec, but now explicitly: every player/club reference renders via `<PlayerAvatar />` / `<ClubBadge />`, and all live state (secret picks, timers, answers, eliminations) is Socket.io room state broadcast to players in that room.
 
 ### 1. Guess The Player
-Classic 20-questions. No timer, no hints, no AI. Player A and Player B each secretly pick a player (via search, resolved through `searchPlayer`, shown as a real `<PlayerAvatar/>` only to its owner). Unlimited yes/no questions asked in room chat, answered by the opponent. First correct guess wins. In 2v2, teammates share one hidden player.
+Classic 20-questions — but truly unlimited questions, no timer, no hints, no AI. Two teams face off. Supported team sizes: **1v1, 2v2, 3v3, 4v4, 5v5** — chosen as the room mode before starting.
+
+- **1v1**: each of the two players secretly picks a player directly (via search, resolved through `searchPlayer`, shown as a real `<PlayerAvatar/>` only to its owner). No extra step — picking is instant and final, exactly as before.
+- **2v2 and larger**: each team shares ONE hidden player, chosen together through a small **private team lobby** (a team-only mini chat, invisible to the opposing team). Only the team's **leader** (the first player who joined that team) can *propose* a candidate via the search picker. Every other teammate then sees the proposed player and must tap an **"Agree"** button confirming they're happy with that pick. Once every non-leader teammate has agreed, the team's secret locks in. If the leader proposes a different player instead, all previous agreements on that team are cleared and teammates must agree again to the new proposal. The match only begins once **both** teams have locked in a secret this way.
+- Once both secrets are locked, unlimited yes/no questions are asked over the existing room chat, answered by the opposing team (any teammate can answer). Any player on a team can submit a guess at any time — there's no turn order. The first correct guess against the opposing team's secret wins the match for that whole team, and both secrets are revealed to everyone.
 
 ### 2. Who Am I?
 Timer mode. Random player selected server-side. Clues reveal on a schedule: Nationality → Age → Position → League → Current Club → Former Club → Strong Foot → Trophies. First correct guess wins, feeds the round leaderboard.
