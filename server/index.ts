@@ -20,6 +20,7 @@
  */
 
 import { createServer } from "http";
+import { randomUUID } from "crypto";
 import { Server, type Socket } from "socket.io";
 import {
   resolvePlayer,
@@ -92,6 +93,10 @@ const SHIRT_MADNESS_ANSWER_SECONDS = 15; // time everyone has to submit one play
 const SHIRT_MADNESS_ROUND_END_DELAY_MS = 5000; // pause showing round results before the next number/game end
 const GUESS_THE_PLAYER_ASK_SECONDS = 30; // time the current asker has to choose Ask/Guess and submit it
 const GUESS_THE_PLAYER_ANSWER_SECONDS = 20; // time the opposing team has to answer a pending question
+// BUG FIX (live-problems.md): how long a disconnected socket (page reload,
+// brief network blip) has to reconnect via room:rejoin before finalizeLeave
+// actually removes them / ends the match by forfeit.
+const RECONNECT_GRACE_MS = 20000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -118,6 +123,15 @@ interface RoomPlayer {
   isHost: boolean;
   team?: 1 | 2; // which side of a team mode (2v2..10v10) they've joined in the lobby
   connected: boolean;
+  // BUG FIX (live-problems.md — "No active room" after the router.push ->
+  // window.location.href fix): a hard navigation always disconnects the
+  // socket and reconnects as a brand-new socket.id. Without a persistent
+  // per-player token, the server has no way to tell "the same player came
+  // back" from "a stranger joined" and previously just deleted/forfeited
+  // on every reload. The client generates this once per tab (sessionStorage,
+  // so it's stable across a `window.location.href` reload but distinct per
+  // tab) and replays it on room:rejoin.
+  token: string;
 }
 
 interface ChatMessage {
@@ -317,6 +331,11 @@ interface Room {
   guessThePlayer?: GuessThePlayerGameState;
   footballPyramid?: FootballPyramidGameState;
   shirtMadness?: ShirtMadnessGameState;
+  // BUG FIX (live-problems.md): a socket that disconnects (page reload,
+  // brief network blip) gets a grace window to reconnect via room:rejoin
+  // before finalizeLeave actually removes them / ends the match. Keyed by
+  // the OLD (now-disconnected) socketId.
+  pendingDisconnects: Map<string, { token: string; timer: ReturnType<typeof setTimeout> }>;
 }
 
 const MAX_PLAYERS = 50;
@@ -367,6 +386,121 @@ function capacityForMode(mode: RoomMode): number {
 
 function teamRoomName(code: string, team: 1 | 2): string {
   return `${code}:team${team}`;
+}
+
+// BUG FIX (live-problems.md): re-homes every reference to a disconnected
+// player's OLD socketId onto their NEW socketId after a successful
+// room:rejoin. Every game engine in this file keys its live state by
+// socketId (turn order arrays, teamOf records, score maps, elimination
+// sets, the currently-pending question, etc.) since socketId was always
+// assumed stable for the lifetime of a match — which a hard page reload
+// breaks. This is the one place that assumption gets repaired. Historical,
+// already-archived data (Guess The Player's questionHistory, chat `from`
+// which is name-based already) is deliberately left alone — only live,
+// still-referenced state needs to follow the player to their new socket.
+function swapSocketId(room: Room, oldId: string, newId: string) {
+  const player = room.players.get(oldId);
+  if (player) {
+    room.players.delete(oldId);
+    player.socketId = newId;
+    player.connected = true;
+    room.players.set(newId, player);
+  }
+  if (room.hostId === oldId) room.hostId = newId;
+  socketRoom.delete(oldId);
+  socketRoom.set(newId, room.code);
+
+  const newSocket = io.sockets.sockets.get(newId);
+  newSocket?.join(room.code);
+  if (player?.team) newSocket?.join(teamRoomName(room.code, player.team));
+
+  if (room.chain) {
+    const c = room.chain;
+    c.order = c.order.map((id) => (id === oldId ? newId : id));
+    if (c.eliminated.has(oldId)) {
+      c.eliminated.delete(oldId);
+      c.eliminated.add(newId);
+    }
+    if (c.winnerId === oldId) c.winnerId = newId;
+  }
+
+  if (room.whoAmI?.scores.has(oldId)) {
+    const v = room.whoAmI.scores.get(oldId)!;
+    room.whoAmI.scores.delete(oldId);
+    room.whoAmI.scores.set(newId, v);
+  }
+  if (room.whoAmI?.solvedBy === oldId) room.whoAmI.solvedBy = newId;
+  if (room.whoAmI?.winnerId === oldId) room.whoAmI.winnerId = newId;
+
+  if (room.careerMaze?.scores.has(oldId)) {
+    const v = room.careerMaze.scores.get(oldId)!;
+    room.careerMaze.scores.delete(oldId);
+    room.careerMaze.scores.set(newId, v);
+  }
+  if (room.careerMaze?.solvedBy === oldId) room.careerMaze.solvedBy = newId;
+  if (room.careerMaze?.winnerId === oldId) room.careerMaze.winnerId = newId;
+
+  if (room.lastManStanding) {
+    const l = room.lastManStanding;
+    l.order = l.order.map((id) => (id === oldId ? newId : id));
+    if (l.eliminated.has(oldId)) {
+      l.eliminated.delete(oldId);
+      l.eliminated.add(newId);
+    }
+    if (l.answers.has(oldId)) {
+      const v = l.answers.get(oldId)!;
+      l.answers.delete(oldId);
+      l.answers.set(newId, v);
+    }
+    if (l.winnerId === oldId) l.winnerId = newId;
+  }
+
+  if (room.guessThePlayer) {
+    const g = room.guessThePlayer;
+    g.order = g.order.map((id) => (id === oldId ? newId : id));
+    if (g.teamOf[oldId] !== undefined) {
+      g.teamOf[newId] = g.teamOf[oldId];
+      delete g.teamOf[oldId];
+    }
+    g.questionOrder = g.questionOrder.map((id) => (id === oldId ? newId : id));
+    if (g.currentQuestion) {
+      if (g.currentQuestion.askerId === oldId) g.currentQuestion.askerId = newId;
+      if (g.currentQuestion.answers[oldId] !== undefined) {
+        g.currentQuestion.answers[newId] = g.currentQuestion.answers[oldId];
+        delete g.currentQuestion.answers[oldId];
+      }
+    }
+    if (g.winnerId === oldId) g.winnerId = newId;
+  }
+
+  if (room.footballPyramid) {
+    const fp = room.footballPyramid;
+    if (fp.scores.has(oldId)) {
+      const v = fp.scores.get(oldId)!;
+      fp.scores.delete(oldId);
+      fp.scores.set(newId, v);
+    }
+    if (fp.solvedIds.has(oldId)) {
+      fp.solvedIds.delete(oldId);
+      fp.solvedIds.add(newId);
+    }
+    if (fp.winnerId === oldId) fp.winnerId = newId;
+  }
+
+  if (room.shirtMadness) {
+    const s = room.shirtMadness;
+    if (s.scores.has(oldId)) {
+      const v = s.scores.get(oldId)!;
+      s.scores.delete(oldId);
+      s.scores.set(newId, v);
+    }
+    if (s.answers.has(oldId)) {
+      const v = s.answers.get(oldId)!;
+      s.answers.delete(oldId);
+      s.answers.set(newId, v);
+    }
+    if (s.winnerId === oldId) s.winnerId = newId;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1554,9 +1688,17 @@ const io = new Server(httpServer, {
 io.on("connection", (socket: Socket) => {
   socket.on(
     "room:create",
-    (payload: { displayName: string; mode: RoomMode }, ack?: (res: unknown) => void) => {
+    (
+      payload: { displayName: string; mode: RoomMode; token?: string },
+      ack?: (res: unknown) => void
+    ) => {
       const displayName = (payload?.displayName ?? "").trim().slice(0, 24) || "Player";
       const mode: RoomMode = VALID_ROOM_MODES.includes(payload?.mode) ? payload.mode : "ffa";
+      // BUG FIX (live-problems.md): accept a client-generated reconnect token
+      // if one was sent (it wasn't yet, for a brand-new tab), otherwise mint
+      // one here so the client always has something to persist for later
+      // room:rejoin calls.
+      const token = (payload?.token ?? "").trim() || randomUUID();
 
       const code = generateRoomCode();
       const room: Room = {
@@ -1565,26 +1707,30 @@ io.on("connection", (socket: Socket) => {
         gameId: null,
         hostId: socket.id,
         players: new Map([
-          [socket.id, { socketId: socket.id, displayName, ready: false, isHost: true, connected: true }],
+          [socket.id, { socketId: socket.id, displayName, ready: false, isHost: true, connected: true, token }],
         ]),
         chat: [],
         teamChat: { 1: [], 2: [] },
         started: false,
         createdAt: Date.now(),
+        pendingDisconnects: new Map(),
       };
 
       rooms.set(code, room);
       socketRoom.set(socket.id, code);
       socket.join(code);
 
-      ack?.({ ok: true, code });
+      ack?.({ ok: true, code, token });
       broadcastRoomState(io, room);
     }
   );
 
   socket.on(
     "room:join",
-    (payload: { code: string; displayName: string }, ack?: (res: unknown) => void) => {
+    (
+      payload: { code: string; displayName: string; token?: string },
+      ack?: (res: unknown) => void
+    ) => {
       const code = (payload?.code ?? "").trim().toUpperCase();
       const room = rooms.get(code);
 
@@ -1602,18 +1748,90 @@ io.on("connection", (socket: Socket) => {
       }
 
       const displayName = (payload?.displayName ?? "").trim().slice(0, 24) || "Player";
+      const token = (payload?.token ?? "").trim() || randomUUID();
       room.players.set(socket.id, {
         socketId: socket.id,
         displayName,
         ready: false,
         isHost: false,
         connected: true,
+        token,
       });
       socketRoom.set(socket.id, code);
       socket.join(code);
 
-      ack?.({ ok: true, code });
+      ack?.({ ok: true, code, token });
       broadcastRoomState(io, room);
+    }
+  );
+
+  // BUG FIX (live-problems.md — "No active room" on Guess The Player after
+  // Start Game, live only): the room:started redirect was changed from
+  // router.push to window.location.href (see that fix's own writeup) to
+  // avoid resolving a route against a stale JS bundle after a deploy. A
+  // real page load is correct for that problem, but it always disconnects
+  // and reconnects the socket under a brand-new socket.id — and every game
+  // engine here keys all of its state (turn order, teamOf, scores, secrets)
+  // by socketId. Previously the server had no concept of "the same player
+  // reconnecting" at all: a disconnect went straight to finalizeLeave,
+  // which (for a 1v1 Guess The Player match, both tabs reloading near-
+  // simultaneously) deleted the empty room outright before the new page
+  // even finished loading — so the client's next `room:join`/sync had
+  // nothing to attach to and rendered "No active room". room:rejoin lets a
+  // reconnecting socket reclaim its OLD player identity (same token,
+  // stored in sessionStorage so it's stable across a reload but distinct
+  // per tab) within RECONNECT_GRACE_MS of disconnecting, swapping every
+  // reference to the old socketId over to the new one via swapSocketId
+  // instead of losing the seat entirely.
+  socket.on(
+    "room:rejoin",
+    (payload: { code: string; token: string }, ack?: (res: unknown) => void) => {
+      const code = (payload?.code ?? "").trim().toUpperCase();
+      const token = (payload?.token ?? "").trim();
+      const room = rooms.get(code);
+      if (!room || !token) {
+        ack?.({ ok: false, error: "Room not found." });
+        return;
+      }
+
+      let oldSocketId: string | null = null;
+      for (const [id, p] of room.players.entries()) {
+        if (p.token === token && !p.connected) {
+          oldSocketId = id;
+          break;
+        }
+      }
+      if (!oldSocketId) {
+        ack?.({
+          ok: false,
+          error: "Could not reconnect — the room may have moved on without you.",
+        });
+        return;
+      }
+
+      const pending = room.pendingDisconnects.get(oldSocketId);
+      if (pending) clearTimeout(pending.timer);
+      room.pendingDisconnects.delete(oldSocketId);
+
+      swapSocketId(room, oldSocketId, socket.id);
+
+      ack?.({ ok: true, code: room.code });
+      broadcastRoomState(io, room);
+      if (room.chain) broadcastChainState(io, room);
+      if (room.whoAmI) broadcastWhoAmIState(io, room);
+      if (room.careerMaze) broadcastCareerMazeState(io, room);
+      if (room.lastManStanding) broadcastLastManStandingState(io, room);
+      if (room.guessThePlayer) {
+        broadcastGuessThePlayerState(io, room);
+        const myTeam = room.guessThePlayer.teamOf[socket.id];
+        if (myTeam) {
+          io.to(socket.id).emit("guessplayer:teamSecret", {
+            name: room.guessThePlayer.proposedSecret[myTeam],
+          });
+        }
+      }
+      if (room.footballPyramid) broadcastFootballPyramidState(io, room);
+      if (room.shirtMadness) broadcastShirtMadnessState(io, room);
     }
   );
 
@@ -2225,9 +2443,37 @@ io.on("connection", (socket: Socket) => {
     }
   });
 
-  socket.on("room:leave", () => handleLeave(socket));
-  socket.on("disconnect", () => handleLeave(socket));
+  socket.on("room:leave", () => finalizeLeave(socket.id));
+  // BUG FIX (live-problems.md): an explicit "Leave" click means it forever
+  // — that still goes straight to finalizeLeave, no grace. A bare
+  // `disconnect` (page reload, tab close, brief network blip — the server
+  // can't tell which) gets a grace window first, since a reload is exactly
+  // what room:started's window.location.href redirect intentionally causes.
+  socket.on("disconnect", () => scheduleGracefulLeave(socket.id));
 });
+
+// BUG FIX (live-problems.md): starts the reconnect grace window for a
+// disconnected socket instead of removing them immediately. The player
+// stays in `room.players` (just `connected: false`) so every existing
+// "are they still here" check across the game engines keeps working
+// unchanged during the grace window; only if nobody claims their token via
+// room:rejoin before RECONNECT_GRACE_MS elapses does finalizeLeave actually
+// run.
+function scheduleGracefulLeave(socketId: string) {
+  const room = roomForSocket(socketId);
+  if (!room) return;
+  const player = room.players.get(socketId);
+  if (!player) return;
+
+  player.connected = false;
+  broadcastRoomState(io, room);
+
+  const timer = setTimeout(() => {
+    room.pendingDisconnects.delete(socketId);
+    finalizeLeave(socketId);
+  }, RECONNECT_GRACE_MS);
+  room.pendingDisconnects.set(socketId, { token: player.token, timer });
+}
 
 // True once the currently-active game (if any) has reached a real end
 // state, so `room:backToLobby` can't be used to bail out of a match still
@@ -2251,15 +2497,21 @@ function roomForSocket(socketId: string): Room | undefined {
   return code ? rooms.get(code) : undefined;
 }
 
-function handleLeave(socket: Socket) {
-  const room = roomForSocket(socket.id);
+// BUG FIX (live-problems.md): renamed from handleLeave — this now runs
+// either immediately (explicit room:leave) or after a disconnected socket's
+// RECONNECT_GRACE_MS window expires without a matching room:rejoin
+// (scheduleGracefulLeave). Takes a plain socketId since by the time the
+// grace timer fires, the original Socket object may be long gone.
+function finalizeLeave(socketId: string) {
+  const room = roomForSocket(socketId);
   if (!room) return;
 
-  room.players.delete(socket.id);
-  socketRoom.delete(socket.id);
-  socket.leave(room.code);
-  socket.leave(teamRoomName(room.code, 1));
-  socket.leave(teamRoomName(room.code, 2));
+  room.players.delete(socketId);
+  socketRoom.delete(socketId);
+  const s = io.sockets.sockets.get(socketId);
+  s?.leave(room.code);
+  s?.leave(teamRoomName(room.code, 1));
+  s?.leave(teamRoomName(room.code, 2));
 
   if (room.players.size === 0) {
     if (room.chain?.timer) clearTimeout(room.chain.timer);
@@ -2274,15 +2526,15 @@ function handleLeave(socket: Socket) {
 
   // Mid-match disconnect during The Chain counts as an elimination so the
   // game doesn't stall waiting on a turn that will never come.
-  if (room.chain && !room.chain.winnerId && !room.chain.eliminated.has(socket.id)) {
-    eliminateChainPlayer(io, room, socket.id);
+  if (room.chain && !room.chain.winnerId && !room.chain.eliminated.has(socketId)) {
+    eliminateChainPlayer(io, room, socketId);
   }
 
   // Mid-match disconnect during Last Man Standing: mark eliminated so they
   // stop counting toward "everyone answered", and resolve/end as needed.
   if (room.lastManStanding && room.lastManStanding.phase !== "gameEnd") {
     const l = room.lastManStanding;
-    l.eliminated.add(socket.id);
+    l.eliminated.add(socketId);
     if (l.phase === "answering") {
       const survivors = lastManStandingSurvivors(room);
       if (survivors.length <= 1 || survivors.every((id) => l.answers.has(id))) {
@@ -2349,7 +2601,7 @@ function handleLeave(socket: Socket) {
   }
 
   // Host left — hand off to whoever's been in the room longest.
-  if (room.hostId === socket.id) {
+  if (room.hostId === socketId) {
     const next = Array.from(room.players.values())[0];
     room.hostId = next.socketId;
     next.isHost = true;

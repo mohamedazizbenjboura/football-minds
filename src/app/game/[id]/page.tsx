@@ -23,7 +23,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft,
@@ -58,6 +58,46 @@ import PlayerSearchPicker from "@/components/PlayerSearchPicker";
 export default function GamePage() {
   const params = useParams<{ id: string }>();
   const gameId = (params?.id ?? "").toString();
+
+  // BUG FIX (live-problems.md — "No active room" on Guess The Player after
+  // Start Game, live only): the room:started redirect uses a hard
+  // `window.location.href` navigation (see that fix's comment on
+  // src/app/room/[code]/page.tsx), which always disconnects the socket and
+  // loses whatever the Zustand store held in memory. Every game screen
+  // below already renders an honest "No active room" if `!room` — but
+  // nothing ever TRIED to reconnect first, so that fallback fired on every
+  // single hard reload, 100% of the time, instead of only on a genuinely
+  // expired/gone room. This mirrors the exact rejoin-on-mount pattern
+  // src/app/room/[code]/page.tsx already uses for the pre-start lobby,
+  // just via `rejoin` (token-based, since the match may already be
+  // mid-way through and a plain room:join is rejected once room.started is
+  // true) instead of `joinRoom`.
+  const searchParams = useSearchParams();
+  const code = (searchParams?.get("room") ?? "").toUpperCase();
+  const { room, rejoin } = useRoomStore();
+  // Lazily seeded from `room`, matching the exact pattern
+  // src/app/room/[code]/page.tsx's own rejoin-on-mount effect uses for its
+  // `joining` state — if the store already has room state at mount (e.g.
+  // this component remounted while still connected), start non-reconnecting
+  // without a synchronous setState-in-effect to correct it afterwards.
+  const [reconnecting, setReconnecting] = useState(() => !room);
+
+  useEffect(() => {
+    if (room) return; // already have room state — nothing to reconnect
+    // `rejoin` itself no-ops (resolving false) when there's no stored token
+    // for this code, e.g. a brand-new tab with nothing to reclaim — always
+    // routing through it here keeps this a single, uniformly async path.
+    rejoin(code).finally(() => setReconnecting(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
+
+  if (reconnecting) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-4 px-4 text-center">
+        <p className="text-gray-400">Reconnecting…</p>
+      </main>
+    );
+  }
 
   if (gameId === "the-chain") {
     return <TheChainGame />;

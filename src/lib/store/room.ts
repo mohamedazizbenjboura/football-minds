@@ -3,6 +3,32 @@
 import { create } from "zustand";
 import { getSocket } from "@/lib/socket";
 
+// BUG FIX (live-problems.md — "No active room" on Guess The Player after
+// Start Game, live only): a hard `window.location.href` reload (needed by
+// the room:started redirect — see that fix's comment in
+// src/app/room/[code]/page.tsx) always disconnects the socket and
+// reconnects under a brand-new socket.id. The server now supports
+// reclaiming your OLD seat via room:rejoin, but it needs a token that
+// survives the reload to prove "this is the same player" — sessionStorage
+// is the right place: it's stable across a reload of the SAME tab (unlike
+// state kept only in memory) but distinct per tab (unlike localStorage,
+// which DISPLAY_NAME_KEY already deliberately shares across tabs so two
+// tabs in one browser can each pick their own name). Keyed per room code so
+// a stale token from a long-finished room never gets reused.
+function tokenKey(code: string): string {
+  return `fm:playerToken:${code}`;
+}
+
+function getStoredToken(code: string): string | null {
+  if (typeof window === "undefined") return null;
+  return sessionStorage.getItem(tokenKey(code));
+}
+
+function storeToken(code: string, token: string) {
+  if (typeof window === "undefined") return;
+  sessionStorage.setItem(tokenKey(code), token);
+}
+
 // Guess The Player supports every team size 1v1..10v10 (PROJECT_SPEC.md
 // §4/§5.1); every other game still only ever uses 1v1/2v2/ffa, but the
 // room itself doesn't restrict mode by game, so the type covers all of them.
@@ -57,6 +83,12 @@ interface RoomStore {
 
   createRoom: (displayName: string, mode: RoomMode) => Promise<string | null>;
   joinRoom: (code: string, displayName: string) => Promise<boolean>;
+  // BUG FIX (live-problems.md): reclaim a seat in an already-started room
+  // after a hard reload, using the token sessionStorage remembers for that
+  // room code. Returns false (rather than throwing) if there's no token to
+  // try, or the server says the reconnect window has already passed —
+  // callers should fall back to sending the person home in either case.
+  rejoin: (code: string) => Promise<boolean>;
   leaveRoom: () => void;
   setReady: (ready: boolean) => void;
   changeMode: (mode: RoomMode) => void;
@@ -109,12 +141,13 @@ export const useRoomStore = create<RoomStore>((set, get) => {
         socket.emit(
           "room:create",
           { displayName, mode },
-          (res: { ok: boolean; code?: string; error?: string }) => {
+          (res: { ok: boolean; code?: string; token?: string; error?: string }) => {
             if (!res.ok) {
               set({ connecting: false, error: res.error ?? "Could not create room." });
               resolve(null);
               return;
             }
+            if (res.code && res.token) storeToken(res.code, res.token);
             resolve(res.code ?? null);
           }
         );
@@ -131,9 +164,40 @@ export const useRoomStore = create<RoomStore>((set, get) => {
         socket.emit(
           "room:join",
           { code, displayName },
-          (res: { ok: boolean; error?: string }) => {
+          (res: { ok: boolean; code?: string; token?: string; error?: string }) => {
             if (!res.ok) {
               set({ connecting: false, error: res.error ?? "Could not join room." });
+              resolve(false);
+              return;
+            }
+            if (res.code && res.token) storeToken(res.code, res.token);
+            resolve(true);
+          }
+        );
+      });
+    },
+
+    // BUG FIX (live-problems.md): used by /game/[id]'s mount effect when it
+    // finds no room in the store yet (the normal case right after a hard
+    // reload). Silently resolves false — no error state set — when there's
+    // simply no token to try, since that's an expected, non-error path (a
+    // brand-new tab landing on a game URL with nothing to reclaim).
+    rejoin: async (code) => {
+      const token = getStoredToken(code);
+      if (!token) return false;
+
+      set({ connecting: true, error: null });
+      const socket = getSocket();
+      attachListeners();
+      if (!socket.connected) socket.connect();
+
+      return new Promise((resolve) => {
+        socket.emit(
+          "room:rejoin",
+          { code, token },
+          (res: { ok: boolean; error?: string }) => {
+            if (!res.ok) {
+              set({ connecting: false, error: res.error ?? "Could not reconnect." });
               resolve(false);
               return;
             }
