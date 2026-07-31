@@ -42,7 +42,15 @@ import { normalizeName } from "./chainEngine";
  * chainEngine.ts's resolvePlayer() directly — instead, a single-word
  * guess is now also allowed to match just the LAST word of the other
  * name, which is the closest equivalent for two arbitrary free-text
- * strings and matches how people actually type in a fast party game. */
+ * strings and matches how people actually type in a fast party game.
+ *
+ * BUG FIX #2 (2026-07-31, reported live): the fix above only ever checked
+ * the single word against the LAST word of the full name, so "Ronaldo"
+ * worked but "Cristiano" (the first name) still silently failed to win —
+ * same silent non-match, just on the other half of the name. A one-word
+ * guess is now checked against EVERY word of the other name (first,
+ * middle, or last), not just the final one, so either half of "Cristiano
+ * Ronaldo" correctly wins. */
 export function namesMatch(a: string, b: string): boolean {
   const na = normalizeName(a);
   const nb = normalizeName(b);
@@ -51,8 +59,8 @@ export function namesMatch(a: string, b: string): boolean {
 
   const aWords = na.split(" ");
   const bWords = nb.split(" ");
-  if (aWords.length === 1 && bWords[bWords.length - 1] === na) return true;
-  if (bWords.length === 1 && aWords[aWords.length - 1] === nb) return true;
+  if (aWords.length === 1 && bWords.includes(na)) return true;
+  if (bWords.length === 1 && aWords.includes(nb)) return true;
 
   return false;
 }
