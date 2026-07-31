@@ -19,7 +19,7 @@ export const GAMES: GameDef[] = [
     icon: "🧠",
     title: "Guess The Player",
     description: "20 Questions style. Deduction only. No hints.",
-    players: "2-8",
+    players: "2-10",
     difficulty: "Medium",
     duration: "5 min",
   },

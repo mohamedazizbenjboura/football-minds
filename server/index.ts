@@ -35,8 +35,12 @@ import {
   buildClues,
   randomWhoAmITarget,
   isCorrectWhoAmIGuess,
+  currentClubOf,
+  isValidWhoAmIRounds,
   WHO_AM_I_CLUE_COUNT,
+  WHO_AM_I_ROUNDS_DEFAULT,
   type WhoAmIPlayer,
+  type WhoAmIRoundOption,
 } from "./whoAmIEngine";
 import {
   buildTimeline,
@@ -75,9 +79,10 @@ const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN ?? "http://localhost:3000")
   .map((s) => s.trim())
   .filter(Boolean);
 const CHAIN_TURN_SECONDS = 10;
-const WHO_AM_I_ROUNDS = 5;
 const WHO_AM_I_CLUE_INTERVAL_MS = 4000; // time between each clue reveal
-const WHO_AM_I_ROUND_END_DELAY_MS = 4000; // pause after a round resolves before the next round starts
+// Aziz's request: 10s to look at the FIFA-style reveal card + scoreboard
+// and mentally prep before the next round starts (was 4s).
+const WHO_AM_I_ROUND_END_DELAY_MS = 10000;
 const WHO_AM_I_POST_LAST_CLUE_MS = 6000; // grace period after the final clue before the round is marked unsolved
 const CAREER_MAZE_ROUNDS = 5;
 const CAREER_MAZE_ROUND_SECONDS = 20; // time to guess after the full timeline is revealed
@@ -175,6 +180,9 @@ interface WhoAmIGameState {
   phase: "clue" | "roundEnd" | "gameEnd";
   timer: ReturnType<typeof setTimeout> | null;
   nextClueAt: number | null;
+  // Set once a round ends (solved or not) so the client can show a real
+  // "next round in Xs" prep countdown instead of static text — Aziz's request.
+  nextRoundAt: number | null;
   winnerId: string | null; // only set once phase === "gameEnd"
 }
 
@@ -315,6 +323,10 @@ interface Room {
   code: string;
   mode: RoomMode;
   gameId: GameId | null;
+  // Who Am I?'s host-picked round count (10/15/20 — Aziz's request).
+  // Only meaningful when gameId === "who-am-i", but kept on every room
+  // (defaulted at room:create) so it's always safe to read.
+  whoAmIRounds: WhoAmIRoundOption;
   hostId: string;
   players: Map<string, RoomPlayer>;
   chat: ChatMessage[];
@@ -366,6 +378,7 @@ function publicRoomState(room: Room) {
     code: room.code,
     mode: room.mode,
     gameId: room.gameId,
+    whoAmIRounds: room.whoAmIRounds,
     hostId: room.hostId,
     started: room.started,
     players: Array.from(room.players.values()),
@@ -629,7 +642,7 @@ function initWhoAmIGame(room: Room) {
 
   room.whoAmI = {
     round: 0,
-    totalRounds: WHO_AM_I_ROUNDS,
+    totalRounds: room.whoAmIRounds ?? WHO_AM_I_ROUNDS_DEFAULT,
     target: null as unknown as WhoAmIPlayer, // set by startWhoAmIRound below
     clues: [],
     cluesRevealed: 0,
@@ -639,6 +652,7 @@ function initWhoAmIGame(room: Room) {
     phase: "clue",
     timer: null,
     nextClueAt: null,
+    nextRoundAt: null,
     winnerId: null,
   };
   startWhoAmIRound(io, room);
@@ -661,6 +675,7 @@ function startWhoAmIRound(io: Server, room: Room) {
   w.cluesRevealed = 1; // first clue is visible immediately when the round starts
   w.solvedBy = null;
   w.phase = "clue";
+  w.nextRoundAt = null;
   armWhoAmIClueTimer(io, room);
   broadcastWhoAmIState(io, room);
 }
@@ -689,8 +704,12 @@ function revealNextWhoAmIClue(io: Server, room: Room) {
 }
 
 function whoAmIPoints(cluesRevealed: number): number {
-  // 1 clue revealed (guessed instantly) = 100pts, down to a 20pt floor once every clue is out.
-  return Math.max(100 - (cluesRevealed - 1) * 12, 20);
+  // 1 clue revealed (guessed instantly) = 100pts, down to a 20pt floor once
+  // every clue is out — evenly spread across WHO_AM_I_CLUE_COUNT (9) clues
+  // so the first guesser always scores meaningfully more than a late one,
+  // per Aziz's request.
+  const step = (100 - 20) / (WHO_AM_I_CLUE_COUNT - 1);
+  return Math.max(Math.round(100 - (cluesRevealed - 1) * step), 20);
 }
 
 function endWhoAmIRoundUnsolved(io: Server, room: Room) {
@@ -708,10 +727,14 @@ function scheduleNextWhoAmIRoundOrEnd(io: Server, room: Room) {
   if (w.timer) clearTimeout(w.timer);
 
   if (w.round >= w.totalRounds) {
+    // Game's over — no "next round" prep countdown to show.
+    w.nextRoundAt = null;
     w.timer = setTimeout(() => endWhoAmIGame(io, room), WHO_AM_I_ROUND_END_DELAY_MS);
   } else {
+    w.nextRoundAt = Date.now() + WHO_AM_I_ROUND_END_DELAY_MS;
     w.timer = setTimeout(() => startWhoAmIRound(io, room), WHO_AM_I_ROUND_END_DELAY_MS);
   }
+  broadcastWhoAmIState(io, room); // re-broadcast so nextRoundAt reaches clients immediately
 }
 
 function endWhoAmIGame(io: Server, room: Room) {
@@ -746,8 +769,16 @@ function publicWhoAmIState(room: Room) {
     phase: w.phase,
     solvedBy: w.solvedBy,
     targetName: revealTarget ? w.target.name : null,
+    // Extra reveal-card fields (Aziz's FIFA-pack-reveal request) — only
+    // populated once the answer itself is already public, same guard as
+    // targetName above, so a wrong/incomplete guess can never leak them.
+    targetNationality: revealTarget ? w.target.nationality : null,
+    targetPosition: revealTarget ? w.target.position : null,
+    targetClub: revealTarget ? currentClubOf(w.target) : null,
+    targetRetired: revealTarget ? w.target.retired : null,
     scores: Object.fromEntries(w.scores),
     nextClueAt: w.nextClueAt,
+    nextRoundAt: w.nextRoundAt,
     winnerId: w.winnerId,
   };
 }
@@ -1705,6 +1736,7 @@ io.on("connection", (socket: Socket) => {
         code,
         mode,
         gameId: null,
+        whoAmIRounds: WHO_AM_I_ROUNDS_DEFAULT,
         hostId: socket.id,
         players: new Map([
           [socket.id, { socketId: socket.id, displayName, ready: false, isHost: true, connected: true, token }],
@@ -1918,6 +1950,19 @@ io.on("connection", (socket: Socket) => {
     const room = roomForSocket(socket.id);
     if (!room || room.hostId !== socket.id || room.started) return;
     room.gameId = payload.gameId;
+    broadcastRoomState(io, room);
+  });
+
+  // Host-only, pre-start lobby option (Aziz's request): let the host pick
+  // how many Who Am I? rounds a match runs — 10, 15, or 20. Silently
+  // ignored if the value isn't one of those three, or the match already
+  // started (rounds are locked in for a match once initWhoAmIGame reads
+  // this at room:start time).
+  socket.on("room:setWhoAmIRounds", (payload: { rounds: number }) => {
+    const room = roomForSocket(socket.id);
+    if (!room || room.hostId !== socket.id || room.started) return;
+    if (!isValidWhoAmIRounds(payload?.rounds)) return;
+    room.whoAmIRounds = payload.rounds;
     broadcastRoomState(io, room);
   });
 

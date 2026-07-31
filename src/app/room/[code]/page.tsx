@@ -38,6 +38,11 @@ const MODES: { id: RoomMode; label: string; icon: React.ReactNode }[] = [
 // touch "Mode" for it.
 const TEAM_MODE_GAMES = new Set(["guess-the-player"]);
 
+// Who Am I?'s host-pickable round counts (Aziz's request) — kept in sync
+// with server/whoAmIEngine.ts's WHO_AM_I_ROUND_OPTIONS by hand, since that
+// file pulls in Node-only deps (fs) and can't be imported into the client bundle.
+const WHO_AM_I_ROUND_CHOICES = [10, 15, 20] as const;
+
 function capacityForMode(mode: RoomMode): number {
   if (mode === "ffa") return 50;
   const m = /^(\d+)v(\d+)$/.exec(mode);
@@ -58,6 +63,7 @@ export default function RoomLobbyPage() {
     leaveRoom,
     setReady,
     changeMode,
+    setWhoAmIRounds,
     assignTeam,
     changeGame,
     kick,
@@ -328,6 +334,30 @@ export default function RoomLobbyPage() {
                     >
                       {m.icon}
                       {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Who Am I? round-count picker (10/15/20) — Aziz's request.
+                Host-only, only shown once Who Am I? is the selected game. */}
+            {room.gameId === "who-am-i" && (
+              <div>
+                <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">Rounds</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {WHO_AM_I_ROUND_CHOICES.map((r) => (
+                    <button
+                      key={r}
+                      disabled={!isHost}
+                      onClick={() => setWhoAmIRounds(r)}
+                      className={`flex items-center justify-center py-2.5 rounded-xl border text-sm font-bold transition-colors ${
+                        (room.whoAmIRounds ?? 10) === r
+                          ? "border-[var(--color-primary)] bg-[var(--color-primary)]/10 text-[var(--color-primary)]"
+                          : "border-white/10 bg-white/5 text-gray-300"
+                      } ${!isHost ? "opacity-60 cursor-not-allowed" : "hover:border-white/20"}`}
+                    >
+                      {r} rounds
                     </button>
                   ))}
                 </div>

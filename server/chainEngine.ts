@@ -73,7 +73,17 @@ export function resolvePlayer(input: string): ChainPlayer | null {
     const parts = normalizeName(p.name).split(" ");
     return parts[parts.length - 1] === target;
   });
-  return byLastName ?? null;
+  if (byLastName) return byLastName;
+
+  // Loose match on first name alone too (e.g. "Cristiano", "Neymar") —
+  // same reasoning as last name, and matches how Guess The Player's search
+  // picker already accepts a partial name. Full name, first name, or last
+  // name are all accepted, consistently, across every game.
+  const byFirstName = players.find((p) => {
+    const parts = normalizeName(p.name).split(" ");
+    return parts[0] === target;
+  });
+  return byFirstName ?? null;
 }
 
 /** Two players are teammates if any of their career stints overlap at the same club. */

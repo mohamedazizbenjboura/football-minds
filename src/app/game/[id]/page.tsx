@@ -41,10 +41,11 @@ import {
   X,
   MessageCircleQuestion,
   Target,
+  Medal,
 } from "lucide-react";
 import { useRoomStore } from "@/lib/store/room";
 import { useChainStore, type ChainPosition } from "@/lib/store/chain";
-import { useWhoAmIStore } from "@/lib/store/whoami";
+import { useWhoAmIStore, type WhoAmIClue, type WhoAmIPublicState } from "@/lib/store/whoami";
 import { useCareerMazeStore } from "@/lib/store/careerMaze";
 import { useLastManStandingStore } from "@/lib/store/lastManStanding";
 import { useGuessThePlayerStore } from "@/lib/store/guessThePlayer";
@@ -53,6 +54,7 @@ import { useShirtMadnessStore } from "@/lib/store/shirtMadness";
 import { gameById } from "@/lib/games";
 import PlayerAvatar from "@/components/PlayerAvatar";
 import ClubBadge from "@/components/ClubBadge";
+import CountryFlag from "@/components/CountryFlag";
 import PlayerSearchPicker from "@/components/PlayerSearchPicker";
 
 export default function GamePage() {
@@ -637,8 +639,150 @@ function CareerMazeGame() {
 }
 
 // ---------------------------------------------------------------------------
-// Who Am I? — fully playable
+// Who Am I? — fully playable, FIFA-pack-style reveal (Aziz's redesign request)
 // ---------------------------------------------------------------------------
+
+/** One revealed clue, rendered as a little "pack" card with a real visual per icon type. */
+function WhoAmIClueCard({ clue, index }: { clue: WhoAmIClue; index: number }) {
+  return (
+    <motion.div
+      key={`${clue.label}-${index}`}
+      initial={{ opacity: 0, rotateY: -90, scale: 0.8 }}
+      animate={{ opacity: 1, rotateY: 0, scale: 1 }}
+      transition={{ type: "spring", stiffness: 260, damping: 22 }}
+      style={{ transformPerspective: 800 }}
+      className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-4 py-3"
+    >
+      <div className="shrink-0">
+        {clue.icon === "flag" && <CountryFlag nationality={clue.value} size={44} />}
+        {clue.icon === "club" && <ClubBadge name={clue.value} size={40} />}
+        {clue.icon === "status" && (
+          <span
+            className={`flex items-center justify-center w-10 h-10 rounded-full ${
+              clue.value === "Active" ? "bg-[var(--color-primary)]/15" : "bg-white/10"
+            }`}
+          >
+            <span
+              className={`w-3 h-3 rounded-full ${
+                clue.value === "Active" ? "bg-[var(--color-primary)] animate-pulse" : "bg-gray-500"
+              }`}
+            />
+          </span>
+        )}
+        {clue.icon === "position" && (
+          <span className="flex items-center justify-center w-10 h-10 rounded-full bg-[var(--color-accent)]/15 text-[var(--color-accent)] font-extrabold text-xs">
+            {clue.value.slice(0, 2).toUpperCase()}
+          </span>
+        )}
+        {clue.icon === "trophy" && (
+          <span className="flex items-center justify-center w-10 h-10 rounded-full bg-[var(--color-accent)]/15 text-[var(--color-accent)]">
+            <Trophy size={20} />
+          </span>
+        )}
+        {clue.icon === "text" && (
+          <span className="flex items-center justify-center w-10 h-10 rounded-full bg-white/10 text-gray-300">
+            <Sparkles size={18} />
+          </span>
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs text-gray-400 font-semibold uppercase tracking-wide">{clue.label}</p>
+        <p className="font-bold truncate">{clue.value}</p>
+      </div>
+    </motion.div>
+  );
+}
+
+/** Big FIFA-Ultimate-Team-style reveal card, shown once a round is over. */
+function WhoAmIRevealCard({ state }: { state: WhoAmIPublicState }) {
+  if (!state.targetName) return null;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 24, scale: 0.85, rotateY: -20 }}
+      animate={{ opacity: 1, y: 0, scale: 1, rotateY: 0 }}
+      transition={{ type: "spring", stiffness: 200, damping: 20 }}
+      className="relative mx-auto w-full max-w-[280px] rounded-[28px] p-5 pt-8 bg-gradient-to-b from-[var(--color-primary)]/25 via-[var(--color-surface)] to-black/60 border border-[var(--color-primary)]/40 shadow-[0_0_40px_-10px_var(--color-primary)] flex flex-col items-center gap-3"
+    >
+      {state.targetPosition && (
+        <span className="absolute top-4 left-4 text-xs font-extrabold px-2.5 py-1 rounded-lg bg-black/40 text-[var(--color-accent)]">
+          {state.targetPosition}
+        </span>
+      )}
+      {state.targetRetired !== null && (
+        <span
+          className={`absolute top-4 right-4 text-[10px] font-extrabold tracking-wide px-2.5 py-1 rounded-full ${
+            state.targetRetired
+              ? "bg-white/10 text-gray-300"
+              : "bg-[var(--color-primary)]/20 text-[var(--color-primary)]"
+          }`}
+        >
+          {state.targetRetired ? "RETIRED" : "ACTIVE"}
+        </span>
+      )}
+      <PlayerAvatar name={state.targetName} position={state.targetPosition} size={120} ring />
+      <h2 className="text-2xl font-extrabold text-center leading-tight">{state.targetName}</h2>
+      <div className="flex items-center gap-5">
+        {state.targetNationality && (
+          <div className="flex flex-col items-center gap-1">
+            <CountryFlag nationality={state.targetNationality} size={34} />
+            <span className="text-[10px] text-gray-400 max-w-[70px] truncate">{state.targetNationality}</span>
+          </div>
+        )}
+        {state.targetClub && (
+          <div className="flex flex-col items-center gap-1">
+            <ClubBadge name={state.targetClub} size={34} />
+            <span className="text-[10px] text-gray-400 max-w-[70px] truncate">{state.targetClub}</span>
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+const WHO_AM_I_MEDALS = ["🥇", "🥈", "🥉"];
+
+/** Styled scoreboard shared by the round-end banner and the final winner screen. */
+function WhoAmIScoreboard({
+  sortedScores,
+  nameOf,
+  selfId,
+  highlightId,
+  highlightPoints,
+}: {
+  sortedScores: [string, number][];
+  nameOf: (id: string | null) => string;
+  selfId: string | null;
+  highlightId?: string | null;
+  highlightPoints?: number | null;
+}) {
+  return (
+    <div className="w-full flex flex-col gap-2">
+      {sortedScores.map(([id, score], i) => (
+        <motion.div
+          key={id}
+          initial={{ opacity: 0, x: -10 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: i * 0.05 }}
+          className={`flex items-center justify-between rounded-xl px-4 py-2.5 ${
+            i === 0 ? "bg-[var(--color-primary)]/15 border border-[var(--color-primary)]/30" : "bg-white/5"
+          }`}
+        >
+          <span className="flex items-center gap-2 font-semibold">
+            <span className="w-6 text-center">
+              {i < 3 ? WHO_AM_I_MEDALS[i] : <span className="text-gray-500 text-xs">{i + 1}</span>}
+            </span>
+            {nameOf(id)}
+            {id === selfId ? " (you)" : ""}
+            {highlightId === id && highlightPoints != null && (
+              <span className="text-xs font-extrabold text-[var(--color-primary)]">+{highlightPoints}</span>
+            )}
+          </span>
+          <span className="font-bold font-mono">{score} pts</span>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
 
 function WhoAmIGame() {
   const router = useRouter();
@@ -704,6 +848,9 @@ function WhoAmIGame() {
   const secondsToNextClue = state.nextClueAt
     ? Math.max(0, Math.ceil((state.nextClueAt - now) / 1000))
     : null;
+  const secondsToNextRound = state.nextRoundAt
+    ? Math.max(0, Math.ceil((state.nextRoundAt - now) / 1000))
+    : null;
 
   if (state.phase === "gameEnd") {
     return (
@@ -716,22 +863,7 @@ function WhoAmIGame() {
           <Trophy size={48} className="text-[var(--color-accent)]" />
           <h1 className="text-3xl font-bold">{nameOf(state.winnerId)} wins!</h1>
           <p className="text-gray-400">After {state.totalRounds} rounds of Who Am I?</p>
-          <div className="w-full flex flex-col gap-2 mt-2">
-            {sortedScores.map(([id, score], i) => (
-              <div
-                key={id}
-                className={`flex items-center justify-between rounded-xl px-4 py-2.5 ${
-                  i === 0 ? "bg-[var(--color-primary)]/15" : "bg-white/5"
-                }`}
-              >
-                <span className="font-semibold">
-                  {i + 1}. {nameOf(id)}
-                  {id === selfId ? " (you)" : ""}
-                </span>
-                <span className="font-bold font-mono">{score} pts</span>
-              </div>
-            ))}
-          </div>
+          <WhoAmIScoreboard sortedScores={sortedScores} nameOf={nameOf} selfId={selfId} />
           <button
             onClick={() => { backToLobby(); window.location.href = `/room/${room.code}`; }}
             className="mt-2 h-12 px-6 rounded-xl bg-[var(--color-primary)] text-black font-bold hover:bg-[var(--color-primary-dark)] transition-colors"
@@ -768,89 +900,105 @@ function WhoAmIGame() {
             <span>{secondsToNextClue ?? "—"}s</span>
           </div>
         )}
+        {state.phase !== "clue" && secondsToNextRound !== null && (
+          <div className="flex items-center gap-2 font-mono font-bold text-lg text-[var(--color-accent)]">
+            <Clock size={18} />
+            <span>Next round in {secondsToNextRound}s</span>
+          </div>
+        )}
       </div>
 
-      {/* Solved / round-end banner */}
+      {/* Round-end: FIFA-pack reveal card + "got it" banner + scoreboard */}
       <AnimatePresence>
         {state.phase !== "clue" && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
-            className={`flex items-center gap-3 rounded-2xl px-5 py-4 ${
-              state.solvedBy
-                ? "bg-[var(--color-primary)]/15 border border-[var(--color-primary)]/40"
-                : "bg-white/5 border border-white/10"
-            }`}
+            className="flex flex-col items-center gap-5"
           >
-            {state.solvedBy ? (
-              <Sparkles className="text-[var(--color-primary)]" size={22} />
-            ) : (
-              <HelpCircle className="text-gray-400" size={22} />
-            )}
-            <div>
+            <div
+              className={`w-full flex items-center gap-3 rounded-2xl px-5 py-4 ${
+                state.solvedBy
+                  ? "bg-[var(--color-primary)]/15 border border-[var(--color-primary)]/40"
+                  : "bg-white/5 border border-white/10"
+              }`}
+            >
+              {state.solvedBy ? (
+                <Sparkles className="text-[var(--color-primary)]" size={22} />
+              ) : (
+                <HelpCircle className="text-gray-400" size={22} />
+              )}
               <p className="font-bold">
                 {state.solvedBy
                   ? `${nameOf(state.solvedBy)} got it! ${lastSolved && lastSolved.playerId === state.solvedBy ? `+${lastSolved.points} pts` : ""}`
                   : "Nobody guessed it in time."}
               </p>
-              <p className="text-sm text-gray-400">
-                It was <span className="font-semibold text-white">{state.targetName}</span> — next round starting…
+            </div>
+
+            <WhoAmIRevealCard state={state} />
+
+            <div className="w-full glass rounded-3xl p-5 flex flex-col gap-3">
+              <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold flex items-center gap-1.5">
+                <Medal size={14} /> Scoreboard
               </p>
+              <WhoAmIScoreboard
+                sortedScores={sortedScores}
+                nameOf={nameOf}
+                selfId={selfId}
+                highlightId={state.solvedBy}
+                highlightPoints={lastSolved?.points}
+              />
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Clue list */}
-      <div className="glass rounded-3xl p-5 flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">
-            Clue {state.cluesRevealed} of {state.totalClues}
-          </p>
-          <div className="flex gap-1">
-            {Array.from({ length: state.totalClues }).map((_, i) => (
+      {/* Clue "pack" list, revealed one at a time */}
+      {state.phase === "clue" && (
+        <>
+          <div className="glass rounded-3xl p-5 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">
+                Clue {state.cluesRevealed} of {state.totalClues}
+              </p>
+              <div className="flex gap-1">
+                {Array.from({ length: state.totalClues }).map((_, i) => (
+                  <span
+                    key={i}
+                    className={`w-2 h-2 rounded-full ${
+                      i < state.cluesRevealed ? "bg-[var(--color-primary)]" : "bg-white/10"
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+            <AnimatePresence initial={false}>
+              {state.clues.map((clue, i) => (
+                <WhoAmIClueCard key={`${clue.label}-${i}`} clue={clue} index={i} />
+              ))}
+            </AnimatePresence>
+          </div>
+
+          {/* Live scoreboard */}
+          <div className="flex flex-wrap gap-2">
+            {sortedScores.map(([id, score]) => (
               <span
-                key={i}
-                className={`w-2 h-2 rounded-full ${
-                  i < state.cluesRevealed ? "bg-[var(--color-primary)]" : "bg-white/10"
-                }`}
-              />
+                key={id}
+                className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full bg-white/5 text-gray-300"
+              >
+                {nameOf(id)}
+                {id === selfId ? " (you)" : ""}: {score}
+              </span>
             ))}
           </div>
-        </div>
-        <AnimatePresence initial={false}>
-          {state.clues.map((clue, i) => (
-            <motion.div
-              key={`${clue.label}-${i}`}
-              initial={{ opacity: 0, x: -12 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="flex items-center justify-between bg-white/5 rounded-xl px-4 py-3"
-            >
-              <span className="text-sm text-gray-400 font-semibold">{clue.label}</span>
-              <span className="font-bold">{clue.value}</span>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-      </div>
-
-      {/* Live scoreboard */}
-      <div className="flex flex-wrap gap-2">
-        {sortedScores.map(([id, score]) => (
-          <span
-            key={id}
-            className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-full bg-white/5 text-gray-300"
-          >
-            {nameOf(id)}
-            {id === selfId ? " (you)" : ""}: {score}
-          </span>
-        ))}
-      </div>
+        </>
+      )}
 
       {/* Input */}
       <form
         onSubmit={handleSubmit}
-        className="fixed bottom-0 left-0 right-0 p-4 glass border-t border-white/10 flex justify-center"
+        className="fixed bottom-0 left-0 right-0 p-4 glass border-t border-white/10 flex flex-col items-center gap-1.5"
       >
         <div className="w-full max-w-3xl flex gap-2">
           <input
@@ -869,6 +1017,11 @@ function WhoAmIGame() {
             <Send size={20} />
           </button>
         </div>
+        {state.phase === "clue" && (
+          <p className="text-[11px] text-gray-500">
+            Full name, first name, or last name — all accepted (e.g. &quot;Cristiano Ronaldo&quot;, &quot;Cristiano&quot;, or &quot;Ronaldo&quot;).
+          </p>
+        )}
       </form>
     </main>
   );

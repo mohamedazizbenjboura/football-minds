@@ -9,9 +9,12 @@
 import { create } from "zustand";
 import { getSocket } from "@/lib/socket";
 
+export type WhoAmIClueIcon = "flag" | "club" | "status" | "position" | "trophy" | "text";
+
 export interface WhoAmIClue {
   label: string;
   value: string;
+  icon: WhoAmIClueIcon;
 }
 
 export type WhoAmIPhase = "clue" | "roundEnd" | "gameEnd";
@@ -25,8 +28,15 @@ export interface WhoAmIPublicState {
   phase: WhoAmIPhase;
   solvedBy: string | null;
   targetName: string | null; // only non-null once the round is over
+  // FIFA-pack-style reveal card fields (Aziz's request) — same reveal
+  // guard as targetName: null until the round is actually over.
+  targetNationality: string | null;
+  targetPosition: "GK" | "DF" | "MF" | "FW" | null;
+  targetClub: string | null;
+  targetRetired: boolean | null;
   scores: Record<string, number>;
   nextClueAt: number | null;
+  nextRoundAt: number | null; // set once the round ends, for the 10s "next round" prep countdown
   winnerId: string | null; // only set once phase === "gameEnd"
 }
 

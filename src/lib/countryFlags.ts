@@ -1,0 +1,96 @@
+/**
+ * Maps a football-nationality display name (as used in
+ * server/data/players.json and, eventually, the real Football Knowledge
+ * Database's `countries` table) to an ISO 3166-1 alpha-2 code, which is
+ * what flag CDNs key on. Deliberately covers every football-relevant
+ * country, not just the ~17 in the current curated dataset, so this table
+ * doesn't need revisiting every time the dataset grows.
+ *
+ * Used exclusively by <CountryFlag/> — no other component should reach
+ * into this map directly.
+ */
+export const COUNTRY_CODES: Record<string, string> = {
+  Argentina: "ar",
+  Belgium: "be",
+  Brazil: "br",
+  Croatia: "hr",
+  Egypt: "eg",
+  England: "gb-eng",
+  France: "fr",
+  Germany: "de",
+  "Ivory Coast": "ci",
+  "Côte d'Ivoire": "ci",
+  Netherlands: "nl",
+  Poland: "pl",
+  Portugal: "pt",
+  Senegal: "sn",
+  Spain: "es",
+  Sweden: "se",
+  Uruguay: "uy",
+  Wales: "gb-wls",
+  Scotland: "gb-sct",
+  "Northern Ireland": "gb-nir",
+  Italy: "it",
+  Morocco: "ma",
+  Algeria: "dz",
+  Tunisia: "tn",
+  Nigeria: "ng",
+  Ghana: "gh",
+  Cameroon: "cm",
+  "South Africa": "za",
+  Mali: "ml",
+  "Democratic Republic of the Congo": "cd",
+  Japan: "jp",
+  "South Korea": "kr",
+  Australia: "au",
+  "United States": "us",
+  Mexico: "mx",
+  Canada: "ca",
+  Colombia: "co",
+  Chile: "cl",
+  Peru: "pe",
+  Ecuador: "ec",
+  Paraguay: "py",
+  Venezuela: "ve",
+  Bolivia: "bo",
+  Switzerland: "ch",
+  Austria: "at",
+  Denmark: "dk",
+  Norway: "no",
+  Finland: "fi",
+  Iceland: "is",
+  Serbia: "rs",
+  Ukraine: "ua",
+  Russia: "ru",
+  Turkey: "tr",
+  Greece: "gr",
+  Slovenia: "si",
+  Slovakia: "sk",
+  "Czech Republic": "cz",
+  Hungary: "hu",
+  Romania: "ro",
+  Bulgaria: "bg",
+  "Bosnia and Herzegovina": "ba",
+  Albania: "al",
+  "North Macedonia": "mk",
+  Montenegro: "me",
+  Georgia: "ge",
+  Iran: "ir",
+  "Saudi Arabia": "sa",
+  Qatar: "qa",
+  "United Arab Emirates": "ae",
+  Iraq: "iq",
+  Jordan: "jo",
+  China: "cn",
+  India: "in",
+  "New Zealand": "nz",
+  Jamaica: "jm",
+  "Costa Rica": "cr",
+  Panama: "pa",
+  Honduras: "hn",
+};
+
+/** Best-effort lookup — returns null (not a guess) if we don't have a code, so the caller can fall back gracefully. */
+export function countryCodeFor(nationality: string): string | null {
+  return COUNTRY_CODES[nationality] ?? null;
+}

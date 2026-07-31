@@ -69,6 +69,9 @@ export interface RoomState {
   code: string;
   mode: RoomMode;
   gameId: string | null;
+  // Who Am I?'s host-picked round count (10/15/20) — present on every
+  // room, only meaningful when gameId === "who-am-i".
+  whoAmIRounds: number;
   hostId: string;
   started: boolean;
   players: RoomPlayer[];
@@ -92,6 +95,8 @@ interface RoomStore {
   leaveRoom: () => void;
   setReady: (ready: boolean) => void;
   changeMode: (mode: RoomMode) => void;
+  // Who Am I? round-count picker (10/15/20), host-only, pre-start.
+  setWhoAmIRounds: (rounds: 10 | 15 | 20) => void;
   // Self-select onto Team 1/2 ahead of a team-mode match (host may pass a
   // playerId to assign someone else instead).
   assignTeam: (team: 1 | 2, playerId?: string) => void;
@@ -215,6 +220,7 @@ export const useRoomStore = create<RoomStore>((set, get) => {
 
     setReady: (ready) => getSocket().emit("room:ready", { ready }),
     changeMode: (mode) => getSocket().emit("room:changeMode", { mode }),
+    setWhoAmIRounds: (rounds) => getSocket().emit("room:setWhoAmIRounds", { rounds }),
     assignTeam: (team, playerId) => getSocket().emit("room:assignTeam", { team, playerId }),
     changeGame: (gameId) => getSocket().emit("room:changeGame", { gameId }),
     kick: (playerId) => getSocket().emit("room:kick", { playerId }),
