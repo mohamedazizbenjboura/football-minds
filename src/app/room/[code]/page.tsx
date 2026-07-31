@@ -54,6 +54,7 @@ export default function RoomLobbyPage() {
     selfId,
     error,
     joinRoom,
+    rejoin,
     leaveRoom,
     setReady,
     changeMode,
@@ -74,9 +75,31 @@ export default function RoomLobbyPage() {
   const [starting, setStarting] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // If we land here directly (refresh, shared link) without room state yet,
-  // rejoin using the name we remember locally. If there's no remembered
-  // name, send them home to pick one via the entry modal.
+  // If we land here directly (refresh, shared link, or a "Back to lobby"
+  // hard reload) without room state yet, try to get back in.
+  //
+  // BUG FIX (Aziz's report — transient "Couldn't join room X. Room is
+  // full." for ~2s after every "Back to lobby" click, then bounced home):
+  // every game's "Back to lobby" button navigates here via a hard
+  // `window.location.href` reload (needed to dodge the deploy-skew crash
+  // documented in live-problems.md), which always disconnects the OLD
+  // socket and connects a brand-new one. This effect used to always call
+  // `joinRoom` — a FRESH `room:join` — even when we're the exact same
+  // player who was already sitting in this room a moment ago. The server
+  // doesn't drop a disconnected player's seat until RECONNECT_GRACE_MS
+  // after the old socket's `disconnect` event actually lands (see
+  // server/index.ts's `scheduleGracefulLeave`) — a race the new page's
+  // connect+join can easily win — so a fresh `room:join` could see the
+  // room still counting our own not-yet-cleaned-up old seat, look "full",
+  // and get rejected with exactly "Room is full.", which then bounced us
+  // home after the 1.5s timeout below. `/game/[id]/page.tsx` already had
+  // the right fix for this same reload for its own screen (see its mount
+  // effect) — it tries `rejoin` (token-based, reclaims the OLD seat via
+  // the server's `swapSocketId`, which can never be rejected as "full")
+  // first. This mirrors that exact pattern here. `rejoin` itself silently
+  // resolves false (no error set) when there's no stored token for this
+  // room code — e.g. a genuinely new player following an invite link —
+  // in which case falling back to a normal `joinRoom` is correct.
   useEffect(() => {
     if (room) return; // already have room state — nothing to (re)join
     const name = typeof window !== "undefined" ? localStorage.getItem(DISPLAY_NAME_KEY) : null;
@@ -84,12 +107,18 @@ export default function RoomLobbyPage() {
       router.replace("/");
       return;
     }
-    joinRoom(code, name).then((ok) => {
-      setJoining(false);
-      if (!ok) {
-        // room may simply not exist (bad/expired code) — bounce home
-        setTimeout(() => router.replace("/"), 1500);
+    rejoin(code).then((rejoined) => {
+      if (rejoined) {
+        setJoining(false);
+        return;
       }
+      joinRoom(code, name).then((ok) => {
+        setJoining(false);
+        if (!ok) {
+          // room may simply not exist (bad/expired code) — bounce home
+          setTimeout(() => router.replace("/"), 1500);
+        }
+      });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
