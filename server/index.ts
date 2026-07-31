@@ -1794,14 +1794,31 @@ io.on("connection", (socket: Socket) => {
         return;
       }
 
+      // BUG FIX (live-tested 2026-07-31 — real 1v1 "No active room" on
+      // Start Game): this used to also require `!p.connected`, on the
+      // assumption the old socket's `disconnect` event (which sets
+      // `connected: false`) would always reach the server before the new
+      // page's `room:rejoin` request did. That's a race, not a guarantee —
+      // `window.location.href` tears down the old page and starts loading
+      // the new one at roughly the same time, and a same-machine websocket
+      // close can easily lose that race against the new page's own connect
+      // + rejoin round trip. When it did, `!p.connected` was still true on
+      // the old entry, nothing matched, and the player saw "No active
+      // room" despite reconnecting within milliseconds. A token is unique
+      // per browser tab (sessionStorage) and never shared, so matching on
+      // it alone — regardless of the old entry's connected flag — is safe:
+      // if the old socket really is still alive, swapSocketId below simply
+      // hands its identity to the new one, and the old socket's eventual
+      // (now-redundant) disconnect event will find nothing to clean up
+      // since its id is removed from `socketRoom` as part of the swap.
       let oldSocketId: string | null = null;
       for (const [id, p] of room.players.entries()) {
-        if (p.token === token && !p.connected) {
+        if (p.token === token) {
           oldSocketId = id;
           break;
         }
       }
-      if (!oldSocketId) {
+      if (!oldSocketId || oldSocketId === socket.id) {
         ack?.({
           ok: false,
           error: "Could not reconnect — the room may have moved on without you.",
