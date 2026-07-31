@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { X, Loader2 } from "lucide-react";
@@ -22,6 +22,20 @@ export default function RoomEntryModal({ mode, onClose }: RoomEntryModalProps) {
   );
   const [roomCode, setRoomCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // BUG FIX: error lives in the shared room store, not on this component --
+  // a failed Join Room attempt (e.g. Room is full.) left it set after this
+  // modal closed, and it silently reappeared under the next modal opened,
+  // including Create a Room, even though that attempt never failed. Clear
+  // it whenever this modal opens or switches mode, for a clean slate.
+  useEffect(() => {
+    clearError();
+  }, [mode, clearError]);
+
+  function handleClose() {
+    clearError();
+    onClose();
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -59,7 +73,7 @@ export default function RoomEntryModal({ mode, onClose }: RoomEntryModalProps) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        onClick={onClose}
+        onClick={handleClose}
       >
         <motion.div
           className="glass w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-6 sm:p-8 relative"
@@ -70,7 +84,7 @@ export default function RoomEntryModal({ mode, onClose }: RoomEntryModalProps) {
           onClick={(e) => e.stopPropagation()}
         >
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="absolute top-5 right-5 text-gray-400 hover:text-white transition-colors p-2 -m-2"
             aria-label="Close"
           >
