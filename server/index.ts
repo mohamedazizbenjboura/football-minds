@@ -2277,7 +2277,24 @@ io.on("connection", (socket: Socket) => {
       if (g.teamOf[id] === myTeam) g.agreedIds.delete(id);
     }
 
-    io.to(teamRoomName(room.code, myTeam)).emit("guessplayer:teamSecret", { name: raw });
+    // BUG FIX (Aziz's report — "Your team's pick" showing no player/photo,
+    // beautiful UI never appearing): this used to broadcast to the
+    // Socket.IO room `teamRoomName(code, myTeam)`. Sockets only ever JOIN
+    // that custom room via the `room:assignTeam` handler — which the
+    // lobby only calls for 2v2+ (1v1 has no team-picker UI at all, by
+    // design: PROJECT_SPEC.md §5.1 says picking is instant and final for
+    // 1v1, no lobby step). So in 1v1 the picking player's own socket was
+    // never a member of that room, and this emit reached nobody — not
+    // even the player who just picked. The client's `myTeamProposal`
+    // (exactly what "Your team's pick" renders, with the player's real
+    // <PlayerAvatar/>) never got set, live, for the very player who set
+    // it. Emitting directly to each team member's own socket.id instead
+    // fixes this everywhere — every Socket.IO socket is implicitly its
+    // own "room" named after its id, so `io.to(id)` always reaches that
+    // exact socket regardless of any custom room membership, with no
+    // dependency on `room:assignTeam` ever having run.
+    const teamSocketIds = guessThePlayerTeamMembers(room, myTeam);
+    io.to(teamSocketIds).emit("guessplayer:teamSecret", { name: raw });
 
     tryLockGuessThePlayerTeam(io, room, myTeam);
     broadcastGuessThePlayerState(io, room);
